@@ -111,7 +111,7 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
     });
   }
 
-  return { imports, symbols, referencedIdentifiers: [], parseErrors: [] };
+  return { imports, symbols, parseErrors: [] };
 }
 
 /** Files with no resolved dependents are the best available guess at an entry point. */

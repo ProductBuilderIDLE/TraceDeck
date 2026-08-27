@@ -32,8 +32,6 @@ export interface ParsedSymbol {
 export interface ParsedFile {
   imports: ParsedImport[];
   symbols: ParsedSymbol[];
-  /** Every identifier read in the file, used to resolve symbol-level reference edges. */
-  referencedIdentifiers: string[];
   parseErrors: string[];
 }
 
@@ -101,7 +99,6 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   const imports: ParsedImport[] = [];
   const symbols: ParsedSymbol[] = [];
-  const referencedIdentifiers = new Set<string>();
   const parseErrors: string[] = [];
 
   const lineOf = (node: ts.Node): number => {
@@ -416,14 +413,6 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
           isDynamicExpression: false,
         });
       }
-    } else if (ts.isIdentifier(node)) {
-      // Declaration names are recorded separately; only reads are reference candidates.
-      const parent = node.parent;
-      const isDeclarationName =
-        parent &&
-        'name' in parent &&
-        (parent as { name?: ts.Node }).name === node;
-      if (!isDeclarationName) referencedIdentifiers.add(node.text);
     }
 
     ts.forEachChild(node, visit);
@@ -436,10 +425,5 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   ts.forEachChild(sourceFile, visit);
 
-  return {
-    imports,
-    symbols,
-    referencedIdentifiers: [...referencedIdentifiers],
-    parseErrors,
-  };
+  return { imports, symbols, parseErrors };
 }

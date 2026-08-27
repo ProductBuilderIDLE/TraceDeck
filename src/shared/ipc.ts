@@ -18,6 +18,7 @@ import type {
   Scan,
   ScanProgress,
   SearchResult,
+  SourceDocument,
 } from './types';
 import type { ThemeId } from './theme';
 
@@ -156,6 +157,10 @@ export interface IpcContract {
     response: { version: string; electron: string; databasePath: string };
   };
   'system:set-theme': { request: { theme: ThemeId }; response: void };
+  'source:read': {
+    request: { projectId: number; relativePath: string };
+    response: SourceDocument;
+  };
 }
 
 export type IpcChannel = keyof IpcContract;
@@ -190,6 +195,7 @@ export const IPC_CHANNELS = [
   'system:reveal-path',
   'system:app-info',
   'system:set-theme',
+  'source:read',
 ] as const satisfies readonly IpcChannel[];
 
 /** Main -> renderer push events. These are one-way and carry no privileged handles. */

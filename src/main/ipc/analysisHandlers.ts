@@ -25,8 +25,6 @@ const EDGE_TYPES: readonly EdgeType[] = [
   'dynamic-import',
   'require',
   'reference',
-  'call',
-  'contains',
 ];
 const FINDING_TYPES: readonly FindingType[] = [
   'circular-dependency',

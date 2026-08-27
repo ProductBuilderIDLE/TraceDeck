@@ -13,15 +13,20 @@ export type SymbolKind =
 
 export type NodeType = 'file' | 'symbol' | 'folder';
 
+/**
+ * Every edge kind the analyser actually produces.
+ *
+ * `reference` is import-level: "this file imports this name, which is declared there",
+ * resolved through barrel files. It is deliberately not a call graph — nothing here records
+ * that one function calls another.
+ */
 export type EdgeType =
   | 'import'
   | 'export'
   | 're-export'
   | 'dynamic-import'
   | 'require'
-  | 'reference'
-  | 'call'
-  | 'contains';
+  | 'reference';
 
 export type ScanStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -110,6 +115,35 @@ export interface TypeCheckSummary {
   durationMs: number;
   /** Present when the check could not run; explains why in plain language. */
   skippedReason: string | null;
+}
+
+export type SourceTokenKind =
+  | 'keyword'
+  | 'string'
+  | 'number'
+  | 'comment'
+  | 'type'
+  | 'identifier'
+  | 'punctuation'
+  | 'plain';
+
+export interface SourceSpan {
+  text: string;
+  kind: SourceTokenKind;
+}
+
+export interface SourceLine {
+  number: number;
+  spans: SourceSpan[];
+}
+
+export interface SourceDocument {
+  relativePath: string;
+  lines: SourceLine[];
+  /** True when the file was too large to render in full. */
+  truncated: boolean;
+  totalLines: number;
+  sizeBytes: number;
 }
 
 export interface SourceFile {

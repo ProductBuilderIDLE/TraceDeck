@@ -10,6 +10,7 @@ import {
   requireNonEmptyString,
 } from '../utils/validation';
 import { resolveWithinProject } from '../utils/paths';
+import { readSource } from '../services/sourceService';
 import { HandledError, type HandlerMap } from './registry';
 
 export function systemHandlers(store: DataStore, databasePath: () => string): HandlerMap {
@@ -57,6 +58,29 @@ export function systemHandlers(store: DataStore, databasePath: () => string): Ha
      * theme id from a fixed list; the actual colour is looked up here, so a compromised
      * renderer cannot paint the window an arbitrary colour or inject a value into Electron.
      */
+    /**
+     * Returns one project file, already tokenised, for the in-app code viewer. The path is
+     * resolved through the same containment check as open/reveal and must belong to a file
+     * the last scan recorded, so the renderer cannot read arbitrary files.
+     */
+    'source:read': async (payload) => {
+      const value = asObject(payload);
+      const projectId = requireInt(value['projectId'], 'projectId', 1);
+      const relativePath = requireNonEmptyString(value['relativePath'], 'relativePath', 4096);
+
+      const project = store.projects.findById(projectId);
+      if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
+
+      const file = store.files.findByPath(projectId, relativePath);
+      if (!file) throw new HandledError('That file is not part of the last scan.', 'NOT_FOUND');
+
+      try {
+        return await readSource(resolveWithinProject(project.rootPath, relativePath), relativePath);
+      } catch {
+        throw new HandledError('That file could not be read from disk.', 'READ_FAILED');
+      }
+    },
+
     'system:set-theme': async (payload) => {
       const value = asObject(payload);
       const theme = requireEnum(value['theme'], 'theme', THEME_IDS);

@@ -46,8 +46,14 @@ export function applyTheme(id: ThemeId): void {
   root.style.colorScheme = theme.appearance;
 }
 
-/** Resolves a theme token to a concrete `rgb()` string for canvas rendering. */
-export function tokenColor(token: string, fallback = 'rgb(0 0 0)'): string {
+/**
+ * Resolves a theme token to a concrete `rgb()` string for canvas rendering.
+ *
+ * The comma-separated form is deliberate: Cytoscape's colour parser does not understand the
+ * modern space-separated syntax and silently falls back to a default when given it.
+ */
+export function tokenColor(token: string, fallback = 'rgb(0, 0, 0)'): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue(`--${token}`).trim();
-  return value.length > 0 ? `rgb(${value})` : fallback;
+  if (value.length === 0) return fallback;
+  return `rgb(${value.split(/\s+/).join(', ')})`;
 }

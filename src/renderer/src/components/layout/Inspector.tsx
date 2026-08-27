@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import clsx from 'clsx';
 import {
   ArrowDownLeft,
+  Code2,
   ArrowUpRight,
   Copy,
   ExternalLink,
@@ -123,6 +124,7 @@ function ExplanationPaths({ entries }: { entries: readonly BlastRadiusEntry[] })
 export function Inspector(): JSX.Element {
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
   const toggleInspector = useUiStore((state) => state.toggleInspector);
+  const openCode = useUiStore((state) => state.openCode);
   const project = useAppStore((state) => state.currentProject);
 
   const [detail, setDetail] = useState<FileDetail | null>(null);
@@ -234,6 +236,15 @@ export function Inspector(): JSX.Element {
               <Button size="sm" variant="ghost" onClick={() => void copyPath()}>
                 <Copy size={11} />
                 Copy path
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => openCode(parsed.path, null)}
+                title="Show this file's source beside the graph"
+              >
+                <Code2 size={11} />
+                View code
               </Button>
               <Button size="sm" variant="ghost" onClick={() => void openInEditor()}>
                 <ExternalLink size={11} />
@@ -402,20 +413,24 @@ export function Inspector(): JSX.Element {
             <Section title="Symbols" count={detail.symbols.length} defaultOpen={false}>
               <ul className="space-y-0.5">
                 {detail.symbols.map((symbol) => (
-                  <li
-                    key={`${symbol.name}-${symbol.startLine}`}
-                    className="flex items-baseline gap-2 px-1.5 py-0.5"
-                  >
-                    <span className="mono-path flex-1 truncate text-ink">{symbol.name}</span>
-                    <span className="shrink-0 text-[10px] text-ink-faint">{symbol.kind}</span>
-                    {symbol.isExported && (
-                      <span className="shrink-0 rounded bg-brand/15 px-1 text-[9px] text-brand">
-                        export
+                  <li key={`${symbol.name}-${symbol.startLine}`}>
+                    <button
+                      type="button"
+                      onClick={() => openCode(parsed.path, symbol.startLine)}
+                      title={`Open ${parsed.path} at line ${symbol.startLine}`}
+                      className="flex w-full items-baseline gap-2 rounded px-1.5 py-0.5 text-left hover:bg-surface-2"
+                    >
+                      <span className="mono-path flex-1 truncate text-ink">{symbol.name}</span>
+                      <span className="shrink-0 text-[10px] text-ink-faint">{symbol.kind}</span>
+                      {symbol.isExported && (
+                        <span className="shrink-0 rounded bg-brand/15 px-1 text-[9px] text-brand">
+                          export
+                        </span>
+                      )}
+                      <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+                        :{symbol.startLine}
                       </span>
-                    )}
-                    <span className="shrink-0 font-mono text-[10px] text-ink-faint">
-                      :{symbol.startLine}
-                    </span>
+                    </button>
                   </li>
                 ))}
               </ul>

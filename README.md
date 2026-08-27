@@ -68,6 +68,19 @@ A file with a high score is not broken, and a file with a low score is not safe.
 
 ---
 
+## Reading source in the app
+
+Selecting a file and pressing **Code** (or `Ctrl`/`Cmd` + `` ` ``) splits the main area so the
+source sits between the graph and the inspector. The divider is draggable. Clicking a symbol in
+the inspector jumps to its declaration, and double-clicking a node in the graph opens that
+file directly.
+
+Highlighting is produced by TypeScript's own scanner in the main process rather than by a
+highlighter shipped to the renderer. TypeScript is already a dependency there, so this is
+accurate for real syntax and costs the renderer bundle nothing. Raw scanning is not JSX-aware
+the way a full parse is, so the occasional span in a `.tsx` file is coloured loosely; the text
+shown is always exact.
+
 ## Themes
 
 Four presets, selectable under **Settings → Appearance**:

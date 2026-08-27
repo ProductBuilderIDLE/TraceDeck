@@ -82,6 +82,10 @@ export const MAX_TRAVERSAL_DEPTH = 25;
 /** Storing every diagnostic from a badly broken project would bloat the database. */
 export const MAX_TYPE_DIAGNOSTICS = 2000;
 
+/** Caps for the in-app source viewer; a file beyond these is shown as a notice instead. */
+export const MAX_SOURCE_BYTES = 1024 * 1024;
+export const MAX_SOURCE_LINES = 8000;
+
 export const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
 export const PRIVACY_NOTICE = 'Analysis stays on this device.';

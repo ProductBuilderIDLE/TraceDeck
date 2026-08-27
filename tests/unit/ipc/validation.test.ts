@@ -14,7 +14,7 @@ import {
   requireStringArray,
 } from '@main/utils/validation';
 import { parseNodeId } from '@shared/nodeIds';
-import { resolveWithinProject } from '@main/ipc/reportHandlers';
+import { resolveWithinProject } from '@main/utils/paths';
 
 /**
  * The renderer is untrusted. These tests pin the boundary behaviour that stops a malformed or

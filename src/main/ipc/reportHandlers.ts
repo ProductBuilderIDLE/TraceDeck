@@ -1,5 +1,4 @@
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import { BrowserWindow, dialog } from 'electron';
 import type { ExportReportResult } from '@shared/ipc';
 import type { FindingType, ReportFormat, ReportScope, ReportSection } from '@shared/types';
@@ -132,19 +131,4 @@ export function reportHandlers(store: DataStore, analysis: AnalysisService): Han
       return { deleted: store.reports.remove(requireInt(value['reportId'], 'reportId', 1)) };
     },
   };
-}
-
-/** Resolves a project-relative path to an absolute one, refusing anything that escapes the root. */
-export function resolveWithinProject(rootPath: string, relativePath: string): string {
-  const absolute = join(rootPath, relativePath);
-  const normalisedRoot = rootPath.replace(/[\\/]+$/, '');
-
-  if (absolute !== normalisedRoot && !absolute.startsWith(`${normalisedRoot}${pathSeparator()}`)) {
-    throw new HandledError('That path is outside the project folder.', 'PATH_ESCAPE');
-  }
-  return absolute;
-}
-
-function pathSeparator(): string {
-  return process.platform === 'win32' ? '\\' : '/';
 }

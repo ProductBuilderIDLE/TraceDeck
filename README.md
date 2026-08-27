@@ -127,8 +127,17 @@ npm run dev
 
 `npm run dev` starts Vite for the renderer and launches Electron with hot reload.
 
-`better-sqlite3` ships prebuilt Node-API binaries, so no native rebuild step or C++ toolchain
-is required for either Node or Electron.
+`better-sqlite3` ships prebuilt Node-API binaries that load unchanged under both Node and
+Electron, so no native rebuild is needed. Its install script nevertheless runs `node-gyp
+rebuild` unconditionally, which fails on a machine without a C++ toolchain. If `npm install`
+stops on a `node-gyp` error, skip the unnecessary compile:
+
+```bash
+npm install --ignore-scripts && npx electron install
+```
+
+The second command fetches the Electron binary that the skipped postinstall would have
+downloaded. Continuous integration installs the same way and needs no toolchain at all.
 
 ### First run
 

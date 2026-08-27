@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron';
 import type { IpcChannel, IpcResponse, IpcResult } from '@shared/ipc';
 import { ValidationError } from '../utils/validation';
+import { PathEscapeError } from '../utils/paths';
 
 export type IpcHandler<C extends IpcChannel> = (payload: unknown) => Promise<IpcResponse<C>>;
 
@@ -19,6 +20,9 @@ export class HandledError extends Error {
 
 function toResult(error: unknown): IpcResult<never> {
   if (error instanceof ValidationError) {
+    return { ok: false, error: error.message, code: error.code };
+  }
+  if (error instanceof PathEscapeError) {
     return { ok: false, error: error.message, code: error.code };
   }
   if (error instanceof HandledError) {

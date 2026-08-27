@@ -9,7 +9,7 @@ import {
   requireInt,
   requireNonEmptyString,
 } from '../utils/validation';
-import { resolveWithinProject } from './reportHandlers';
+import { resolveWithinProject } from '../utils/paths';
 import { HandledError, type HandlerMap } from './registry';
 
 export function systemHandlers(store: DataStore, databasePath: () => string): HandlerMap {

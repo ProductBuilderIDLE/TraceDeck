@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to the same branch makes an in-flight run obsolete. Cancelling it keeps the
+# queue short, which matters on a private repository where Actions minutes are metered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Type-check, lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Nothing in CI launches Electron: the tests are plain Node and the build only bundles.
+      # Skipping the download saves roughly 100 MB and a minute of every run.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # The lowest version package.json supports, so an accidental dependency on a newer
+          # runtime API fails here rather than on a contributor's machine.
+          node-version: '20'
+          cache: npm
+
+      # better-sqlite3 runs `node-gyp rebuild` on install even though it ships ready-made
+      # Node-API prebuilds that load unchanged on every supported platform. Skipping install
+      # scripts avoids compiling SQLite from source for no benefit, and nothing else in the
+      # pipeline needs a postinstall step.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # Not `npm run build`, which would repeat the type-check step above.
+      - name: Build
+        run: npx electron-vite build

@@ -35,6 +35,26 @@ export interface FileRow {
   scan_id: number;
 }
 
+export interface ProjectFileRow {
+  id: number;
+  project_id: number;
+  relative_path: string;
+  absolute_path: string;
+  scan_id: number;
+  entry_kind: string;
+  extension: string;
+  size_bytes: number;
+  modified_at: string;
+  content_kind: string;
+  encoding: string | null;
+  content_hash: string | null;
+  is_git_ignored: number;
+  gitignore_rule: string | null;
+  is_user_excluded: number;
+  analysis_status: string;
+  analysis_reason: string;
+}
+
 export interface SymbolRow {
   id: number;
   project_id: number;

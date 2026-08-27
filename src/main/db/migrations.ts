@@ -151,6 +151,38 @@ export const MIGRATIONS: Migration[] = [
       db.exec(INITIAL_SCHEMA);
     },
   },
+  {
+    version: 2,
+    name: 'project-file-inventory',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE project_files (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          relative_path    TEXT    NOT NULL,
+          absolute_path    TEXT    NOT NULL,
+          scan_id          INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+          entry_kind       TEXT    NOT NULL CHECK (entry_kind IN ('regular','symlink')),
+          extension        TEXT    NOT NULL,
+          size_bytes       INTEGER NOT NULL CHECK (size_bytes >= 0),
+          modified_at      TEXT    NOT NULL,
+          content_kind     TEXT    NOT NULL CHECK (content_kind IN ('text','binary','unknown')),
+          encoding         TEXT,
+          content_hash     TEXT,
+          is_git_ignored   INTEGER NOT NULL DEFAULT 0 CHECK (is_git_ignored IN (0,1)),
+          gitignore_rule   TEXT,
+          is_user_excluded INTEGER NOT NULL DEFAULT 0 CHECK (is_user_excluded IN (0,1)),
+          analysis_status  TEXT    NOT NULL CHECK (analysis_status IN
+            ('eligible','text-only','binary','excluded','oversize','unreadable','symlink')),
+          analysis_reason  TEXT    NOT NULL,
+          UNIQUE (project_id, relative_path)
+        );
+        CREATE INDEX idx_project_files_project ON project_files(project_id, relative_path);
+        CREATE INDEX idx_project_files_scan ON project_files(scan_id);
+        CREATE INDEX idx_project_files_status ON project_files(project_id, analysis_status);
+      `);
+    },
+  },
 ];
 
 export function currentSchemaVersion(db: Db): number {

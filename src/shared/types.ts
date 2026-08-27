@@ -158,6 +158,58 @@ export interface SourceFile {
   scanId: number;
 }
 
+/** The filesystem entry types retained in the project inventory. */
+export type ProjectFileEntryKind = 'regular' | 'symlink';
+
+/** Whether the inventory classifier can safely treat the entry as text content. */
+export type ProjectFileContentKind = 'text' | 'binary' | 'unknown';
+
+export type ProjectFileAnalysisStatus =
+  | 'eligible'
+  | 'text-only'
+  | 'binary'
+  | 'excluded'
+  | 'oversize'
+  | 'unreadable'
+  | 'symlink';
+
+/**
+ * Authoritative project inventory entry. Unlike SourceFile, this includes entries that are
+ * visible but cannot or should not participate in dependency-graph analysis.
+ */
+export interface ProjectFile {
+  id: number;
+  projectId: number;
+  relativePath: string;
+  absolutePath: string;
+  scanId: number;
+  entryKind: ProjectFileEntryKind;
+  extension: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  contentKind: ProjectFileContentKind;
+  encoding: string | null;
+  contentHash: string | null;
+  isGitIgnored: boolean;
+  gitignoreRule: string | null;
+  isUserExcluded: boolean;
+  analysisStatus: ProjectFileAnalysisStatus;
+  analysisReason: string;
+}
+
+export interface ProjectFileCapabilityCounts {
+  total: number;
+  eligible: number;
+  textOnly: number;
+  binary: number;
+  excluded: number;
+  oversize: number;
+  unreadable: number;
+  symlink: number;
+  gitIgnored: number;
+  userExcluded: number;
+}
+
 export interface SymbolRecord {
   id: number;
   projectId: number;

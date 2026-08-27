@@ -38,6 +38,7 @@ describe('schema migrations', () => {
       'files',
       'finding_dismissals',
       'graph_edges',
+      'project_files',
       'projects',
       'saved_reports',
       'scans',

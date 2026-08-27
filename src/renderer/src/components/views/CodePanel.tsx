@@ -97,7 +97,7 @@ export function CodePanel(): JSX.Element {
   const directory = codePath?.slice(0, codePath.length - fileName.length) ?? '';
 
   return (
-    <section className="flex min-w-0 flex-col border-l border-edge bg-surface-1">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col border-l border-edge bg-surface-1">
       <header className="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-2">
         <FileCode size={13} className="shrink-0 text-ink-faint" />
         <span className="mono-path min-w-0 flex-1 truncate" title={codePath ?? ''}>

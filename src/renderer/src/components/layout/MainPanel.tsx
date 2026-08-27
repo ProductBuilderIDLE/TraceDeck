@@ -104,7 +104,7 @@ export function MainPanel({ children }: { children: React.ReactNode }): JSX.Elem
 
       <div ref={splitRef} className="flex min-h-0 min-w-0 flex-1">
         <div
-          className="min-w-0 overflow-y-auto"
+          className="min-h-0 min-w-0 overflow-y-auto"
           style={showCode ? { width: `${codeSplit * 100}%` } : { width: '100%' }}
         >
           {children}
@@ -121,7 +121,7 @@ export function MainPanel({ children }: { children: React.ReactNode }): JSX.Elem
               onPointerUp={onPointerUp}
               className="w-1 shrink-0 cursor-col-resize bg-edge transition-colors hover:bg-brand"
             />
-            <div className="min-w-0 flex-1">
+            <div className="flex min-h-0 min-w-0 flex-1">
               <CodePanel />
             </div>
           </>

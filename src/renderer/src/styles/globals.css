@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The default theme is inlined here so the first paint is already correct. The theme store
+ * overwrites these same custom properties on <html> at runtime; the values below must stay in
+ * step with THEMES['tracedeck-dark'] in src/shared/theme.ts, which a unit test enforces.
+ */
+:root {
+  --surface-0: 26 27 38;
+  --surface-1: 31 33 46;
+  --surface-2: 36 40 59;
+  --surface-3: 46 51 74;
+  --surface-4: 59 66 97;
+  --edge: 41 46 66;
+  --ink: 192 202 245;
+  --ink-muted: 154 165 206;
+  --ink-faint: 104 113 154;
+  --brand: 122 162 247;
+  --brand-dim: 61 90 154;
+  --risk-low: 158 206 106;
+  --risk-med: 224 175 104;
+  --risk-high: 255 158 100;
+  --risk-crit: 247 118 142;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface-0 text-ink antialiased;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+    /* Swapping themes should feel like a setting taking effect, not a page reload. */
+    transition:
+      background-color 140ms ease,
+      color 140ms ease;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-surface-4;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-faint;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand/70;
+  }
+
+  /* Form controls inherit the theme rather than the platform's default light chrome. */
+  input,
+  select,
+  textarea,
+  button {
+    color-scheme: inherit;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply border-edge bg-surface-1;
+  }
+
+  .card {
+    @apply rounded-lg border border-edge bg-surface-1 p-4;
+  }
+
+  .selectable {
+    user-select: text;
+  }
+
+  .mono-path {
+    @apply font-mono text-[11px] leading-relaxed;
+  }
+}

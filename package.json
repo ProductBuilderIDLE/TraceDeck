@@ -1,0 +1,98 @@
+{
+  "name": "tracedeck",
+  "version": "0.1.0",
+  "description": "Private, offline-first dependency explorer and change-impact analyzer for JavaScript and TypeScript repositories.",
+  "main": "./out/main/index.js",
+  "author": "TraceDeck",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/cytoscape-dagre": "^2.3.4",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@typescript-eslint/eslint-plugin": "^8.18.1",
+    "@typescript-eslint/parser": "^8.18.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^2.1.8",
+    "autoprefixer": "^10.4.20",
+    "clsx": "^2.1.1",
+    "cytoscape": "^3.30.4",
+    "cytoscape-dagre": "^2.5.0",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^2.3.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "postcss": "^8.4.49",
+    "prettier": "^3.4.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8",
+    "zustand": "^5.0.2"
+  },
+  "build": {
+    "appId": "dev.tracedeck.app",
+    "productName": "TraceDeck",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/typescript/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    }
+  }
+}

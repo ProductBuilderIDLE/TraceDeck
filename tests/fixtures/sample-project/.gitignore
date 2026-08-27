@@ -1,0 +1,3 @@
+# Build output that must never be scanned
+generated/
+*.generated.ts

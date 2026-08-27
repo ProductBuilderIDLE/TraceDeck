@@ -1,0 +1,14 @@
+# Normalise line endings so the repository is identical on every platform.
+* text=auto eol=lf
+
+# Binary assets git must not touch.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.node binary
+
+# Generated; collapse in diffs and exclude from language statistics.
+package-lock.json linguist-generated=true -diff

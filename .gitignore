@@ -1,0 +1,12 @@
+node_modules/
+
+# Local editor and tooling state, not part of the app.
+.claude/
+out/
+dist/
+release/
+coverage/
+*.log
+.DS_Store
+.vite/
+tsconfig.*.tsbuildinfo

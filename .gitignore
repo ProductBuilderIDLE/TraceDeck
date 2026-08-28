@@ -13,3 +13,6 @@ tsconfig.*.tsbuildinfo
 
 # Scan cache written into any project TraceDeck analyses, including test fixtures.
 .tracedeck/
+
+# Scratch PR text, not part of the project.
+PR_BODY.md

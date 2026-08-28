@@ -160,6 +160,11 @@ export interface IpcContract {
   'system:set-theme': { request: { theme: ThemeId }; response: void };
   /** Every inventoried file for a project, sorted by path, with no implicit cap. */
   'inventory:list': { request: { projectId: number }; response: ProjectFile[] };
+  /** Writes an edited text file, refusing the write if it changed on disk since it was read. */
+  'source:save': {
+    request: { projectId: number; relativePath: string; baseHash: string; text: string };
+    response: SourceDocument;
+  };
   'source:read': {
     request: { projectId: number; relativePath: string };
     response: SourceDocument;
@@ -200,6 +205,7 @@ export const IPC_CHANNELS = [
   'system:set-theme',
   'inventory:list',
   'source:read',
+  'source:save',
 ] as const satisfies readonly IpcChannel[];
 
 /** Main -> renderer push events. These are one-way and carry no privileged handles. */

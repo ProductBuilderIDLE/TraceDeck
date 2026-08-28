@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { BrowserWindow, app, nativeTheme, shell } from 'electron';
+import { MAX_SOURCE_BYTES } from '@shared/constants';
 import { THEME_IDS, themeAppearance, themeWindowBackground } from '@shared/theme';
 import type { DataStore } from '../db';
 import {
@@ -8,9 +9,11 @@ import {
   requireEnum,
   requireInt,
   requireNonEmptyString,
+  requireString,
 } from '../utils/validation';
 import { resolveWithinProject } from '../utils/paths';
 import { readSource } from '../services/sourceService';
+import { saveSource } from '../services/sourceWriteService';
 import { HandledError, type HandlerMap } from './registry';
 
 export function systemHandlers(store: DataStore, databasePath: () => string): HandlerMap {
@@ -81,6 +84,26 @@ export function systemHandlers(store: DataStore, databasePath: () => string): Ha
       } catch {
         throw new HandledError('That file could not be read from disk.', 'READ_FAILED');
       }
+    },
+
+    /**
+     * Saves an edited file. The write is guarded by the hash the editor read, so an edit made
+     * outside TraceDeck is never silently overwritten.
+     */
+    'source:save': async (payload) => {
+      const value = asObject(payload);
+      const projectId = requireInt(value['projectId'], 'projectId', 1);
+      const relativePath = requireNonEmptyString(value['relativePath'], 'relativePath', 4096);
+      const baseHash = requireNonEmptyString(value['baseHash'], 'baseHash', 64);
+      const text = requireString(value['text'], 'text', MAX_SOURCE_BYTES);
+
+      const project = store.projects.findById(projectId);
+      if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
+
+      const file = store.projectFiles.findByPath(projectId, relativePath);
+      if (!file) throw new HandledError('That file is not part of the last scan.', 'NOT_FOUND');
+
+      return saveSource({ rootPath: project.rootPath, relativePath, baseHash, text });
     },
 
     'system:set-theme': async (payload) => {

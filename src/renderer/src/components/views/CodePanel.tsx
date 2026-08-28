@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { Copy, ExternalLink, FileCode, X } from 'lucide-react';
+import { Copy, ExternalLink, FileCode, Pencil, Save, X } from 'lucide-react';
 import type { SourceDocument, SourceTokenKind, SourceUnavailableDocument } from '@shared/types';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
@@ -44,11 +44,21 @@ export function CodePanel(): JSX.Element {
   const codePath = useUiStore((state) => state.codePath);
   const codeLine = useUiStore((state) => state.codeLine);
   const closeCode = useUiStore((state) => state.closeCode);
+  const refreshAfterEdit = useAppStore((state) => state.refreshAnalysis);
 
   const [doc, setDoc] = useState<SourceDocument | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Files open read-only. Editing is an explicit choice, so a stray keystroke in a viewer
+  // can never modify the user's source.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+
+  const dirty = editing && doc?.kind === 'text' && draft !== doc.text;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -65,7 +75,12 @@ export function CodePanel(): JSX.Element {
 
     invoke('source:read', { projectId: project.id, relativePath: codePath })
       .then((result) => {
-        if (!cancelled) setDoc(result);
+        if (cancelled) return;
+        setDoc(result);
+        // Switching files always returns to the locked view.
+        setEditing(false);
+        setConflict(false);
+        setDraft(result.kind === 'text' ? result.text : '');
       })
       .catch((failure: Error) => {
         if (!cancelled) {
@@ -114,6 +129,41 @@ export function CodePanel(): JSX.Element {
     }
   };
 
+  const save = async (): Promise<void> => {
+    if (!project || !codePath || doc?.kind !== 'text') return;
+    setSaving(true);
+    setError(null);
+
+    try {
+      const saved = await invoke('source:save', {
+        projectId: project.id,
+        relativePath: codePath,
+        baseHash: doc.contentHash,
+        text: draft,
+      });
+      setDoc(saved);
+      setDraft(saved.kind === 'text' ? saved.text : draft);
+      setConflict(false);
+      setEditing(false);
+      // Re-analyse so the graph reflects the edit that was just written.
+      void refreshAfterEdit();
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : 'The file could not be saved.';
+      // The draft is deliberately kept on conflict so the user's work is never thrown away.
+      setConflict(/changed on disk/i.test(message));
+      setError(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const discard = (): void => {
+    if (doc?.kind === 'text') setDraft(doc.text);
+    setEditing(false);
+    setConflict(false);
+    setError(null);
+  };
+
   const fileName = codePath?.split('/').pop() ?? '';
   const directory = codePath?.slice(0, codePath.length - fileName.length) ?? '';
 
@@ -127,6 +177,30 @@ export function CodePanel(): JSX.Element {
         </span>
 
         {loading && <Spinner />}
+
+        {doc?.kind === 'text' && doc.editable && !editing && (
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)} title="Edit this file">
+            <Pencil size={11} />
+            Unlock
+          </Button>
+        )}
+        {editing && (
+          <>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!dirty || saving}
+              onClick={() => void save()}
+            >
+              {saving ? <Spinner /> : <Save size={11} />}
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={discard}>
+              Discard changes
+            </Button>
+          </>
+        )}
+
         <Button size="sm" variant="ghost" onClick={() => void copyPath()} title="Copy path">
           <Copy size={11} />
         </Button>
@@ -135,13 +209,38 @@ export function CodePanel(): JSX.Element {
         </Button>
         <button
           type="button"
-          onClick={closeCode}
+          onClick={() => {
+            if (
+              dirty &&
+              !window.confirm('This file has unsaved changes. Close the viewer and lose them?')
+            ) {
+              return;
+            }
+            closeCode();
+          }}
           className="rounded p-1 text-ink-faint hover:bg-surface-3 hover:text-ink"
           aria-label="Close code viewer"
         >
           <X size={13} />
         </button>
       </header>
+
+      {error && editing && (
+        <div
+          className={clsx(
+            'shrink-0 border-b px-3 py-2 text-[11px] leading-relaxed',
+            conflict ? 'border-risk-med/40 bg-risk-med/10 text-risk-med' : 'border-risk-crit/40 bg-risk-crit/10 text-risk-crit',
+          )}
+        >
+          {error}
+          {conflict && (
+            <span className="mt-1 block text-ink-muted">
+              Your edits are still here. Copy anything you need, then discard to reload the
+              current file from disk.
+            </span>
+          )}
+        </div>
+      )}
 
       {copied && (
         <p className="shrink-0 border-b border-edge px-3 py-1 text-[10px] text-ink-faint">
@@ -154,10 +253,19 @@ export function CodePanel(): JSX.Element {
           <p className="p-4 text-[11px] leading-relaxed text-ink-faint">
             Select a file in the graph or explorer to read its source here.
           </p>
-        ) : error ? (
+        ) : error && !editing ? (
           <p className="p-4 text-[11px] leading-relaxed text-risk-crit">{error}</p>
         ) : doc?.kind === 'unavailable' ? (
           <UnavailableNotice doc={doc} />
+        ) : doc && editing ? (
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            spellCheck={false}
+            aria-label={`Edit ${codePath}`}
+            className="selectable h-full w-full resize-none bg-surface-1 p-3 font-mono text-[11px] leading-[1.55] text-ink outline-none"
+            style={{ userSelect: 'text' }}
+          />
         ) : doc ? (
           <>
             <pre className="selectable w-max min-w-full py-1 font-mono text-[11px] leading-[1.55]">

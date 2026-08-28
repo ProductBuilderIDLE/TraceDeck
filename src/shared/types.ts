@@ -146,14 +146,40 @@ export interface SourceLine {
   spans: SourceSpan[];
 }
 
-export interface SourceDocument {
+export type SourceUnavailableReason =
+  | 'binary'
+  | 'too-large'
+  | 'unreadable'
+  | 'symlink'
+  | 'unsupported-encoding';
+
+export interface SourceTextDocument {
+  kind: 'text';
   relativePath: string;
   lines: SourceLine[];
-  /** True when the file was too large to render in full. */
+  /** True when the file was too long to render in full. */
   truncated: boolean;
   totalLines: number;
   sizeBytes: number;
+  encoding: string;
+  /** SHA-256 of the exact bytes read, used to detect edits made outside the app. */
+  contentHash: string;
+  /** Raw decoded text, so an editor can round-trip the file without re-reading it. */
+  text: string;
+  /** False when the file is viewable but must not be written back. */
+  editable: boolean;
 }
+
+export interface SourceUnavailableDocument {
+  kind: 'unavailable';
+  relativePath: string;
+  reason: SourceUnavailableReason;
+  /** Plain-language explanation shown directly to the user. */
+  message: string;
+  sizeBytes: number;
+}
+
+export type SourceDocument = SourceTextDocument | SourceUnavailableDocument;
 
 export interface SourceFile {
   id: number;

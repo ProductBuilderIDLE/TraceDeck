@@ -126,6 +126,16 @@ export function analysisHandlers(store: DataStore, analysis: AnalysisService): H
       });
     },
 
+    'inventory:list': async (payload) => {
+      const value = asObject(payload);
+      const projectId = requireInt(value['projectId'], 'projectId', 1);
+      requireProject(store, projectId);
+
+      // Deliberately uncapped: the Explorer needs the complete inventory, and a silent cap
+      // here is exactly the bug that made large projects look mostly empty.
+      return store.projectFiles.listByProject(projectId);
+    },
+
     'findings:list': async (payload) => {
       const value = asObject(payload);
       const projectId = requireInt(value['projectId'], 'projectId', 1);

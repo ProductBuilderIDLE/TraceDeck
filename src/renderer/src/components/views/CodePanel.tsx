@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { Copy, ExternalLink, FileCode, X } from 'lucide-react';
-import type { SourceDocument, SourceTokenKind } from '@shared/types';
+import type { SourceDocument, SourceTokenKind, SourceUnavailableDocument } from '@shared/types';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
 import { invoke } from '../../lib/ipc';
@@ -17,6 +17,27 @@ const TOKEN_CLASS: Record<SourceTokenKind, string> = {
   punctuation: 'text-ink-muted',
   plain: 'text-ink-muted',
 };
+
+const UNAVAILABLE_TITLE: Record<SourceUnavailableDocument['reason'], string> = {
+  binary: 'Binary file',
+  'too-large': 'File too large to display',
+  unreadable: 'File could not be read',
+  symlink: 'Symbolic link',
+  'unsupported-encoding': 'Unsupported text encoding',
+};
+
+/** Explains precisely why a file has no rendered text, rather than showing an empty pane. */
+function UnavailableNotice({ doc }: { doc: SourceUnavailableDocument }): JSX.Element {
+  return (
+    <div className="space-y-2 p-4">
+      <p className="text-[12px] font-medium text-ink">{UNAVAILABLE_TITLE[doc.reason]}</p>
+      <p className="max-w-md text-[11px] leading-relaxed text-ink-muted">{doc.message}</p>
+      {doc.sizeBytes > 0 && (
+        <p className="mono-path text-ink-faint">{doc.sizeBytes.toLocaleString()} bytes on disk</p>
+      )}
+    </div>
+  );
+}
 
 export function CodePanel(): JSX.Element {
   const project = useAppStore((state) => state.currentProject);
@@ -69,7 +90,7 @@ export function CodePanel(): JSX.Element {
   }, [doc, codeLine]);
 
   const gutterWidth = useMemo(() => {
-    const digits = String(doc?.lines.length ?? 1).length;
+    const digits = String(doc?.kind === 'text' ? doc.lines.length : 1).length;
     return `${Math.max(2, digits)}ch`;
   }, [doc]);
 
@@ -109,7 +130,7 @@ export function CodePanel(): JSX.Element {
         <Button size="sm" variant="ghost" onClick={() => void copyPath()} title="Copy path">
           <Copy size={11} />
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => void openExternally()} title="Open in the default editor">
+        <Button size="sm" variant="ghost" onClick={() => void openExternally()} title="Open with system default">
           <ExternalLink size={11} />
         </Button>
         <button
@@ -135,11 +156,8 @@ export function CodePanel(): JSX.Element {
           </p>
         ) : error ? (
           <p className="p-4 text-[11px] leading-relaxed text-risk-crit">{error}</p>
-        ) : doc && doc.lines.length === 0 && doc.truncated ? (
-          <p className="p-4 text-[11px] leading-relaxed text-ink-muted">
-            This file is {(doc.sizeBytes / 1024 / 1024).toFixed(1)} MB, which is too large to
-            display. Open it in your editor instead.
-          </p>
+        ) : doc?.kind === 'unavailable' ? (
+          <UnavailableNotice doc={doc} />
         ) : doc ? (
           <>
             <pre className="selectable w-max min-w-full py-1 font-mono text-[11px] leading-[1.55]">
@@ -151,10 +169,7 @@ export function CodePanel(): JSX.Element {
                       if (element) lineRefs.current.set(line.number, element);
                       else lineRefs.current.delete(line.number);
                     }}
-                    className={clsx(
-                      'flex px-0',
-                      line.number === codeLine && 'bg-brand/10',
-                    )}
+                    className={clsx('flex px-0', line.number === codeLine && 'bg-brand/10')}
                   >
                     <span
                       className="sticky left-0 shrink-0 select-none bg-surface-1 pr-3 pl-3 text-right text-ink-faint"
@@ -163,15 +178,13 @@ export function CodePanel(): JSX.Element {
                       {line.number}
                     </span>
                     <span className="whitespace-pre pr-4">
-                      {line.spans.length === 0 ? (
-                        ' '
-                      ) : (
-                        line.spans.map((span, index) => (
-                          <span key={index} className={TOKEN_CLASS[span.kind]}>
-                            {span.text}
-                          </span>
-                        ))
-                      )}
+                      {line.spans.length === 0
+                        ? ' '
+                        : line.spans.map((span, index) => (
+                            <span key={index} className={TOKEN_CLASS[span.kind]}>
+                              {span.text}
+                            </span>
+                          ))}
                     </span>
                   </div>
                 ))}
@@ -180,7 +193,8 @@ export function CodePanel(): JSX.Element {
 
             {doc.truncated && (
               <p className="border-t border-edge px-3 py-2 text-[10px] text-ink-faint">
-                Showing the first {doc.lines.length} of {doc.totalLines} lines.
+                Showing the first {doc.lines.length} of {doc.totalLines} lines. This file cannot be
+                edited here, because saving a partial view would discard the rest.
               </p>
             )}
           </>

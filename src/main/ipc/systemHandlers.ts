@@ -27,7 +27,7 @@ export function systemHandlers(store: DataStore, databasePath: () => string): Ha
     const project = store.projects.findById(projectId);
     if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
 
-    const file = store.files.findByPath(projectId, relativePath);
+    const file = store.projectFiles.findByPath(projectId, relativePath);
     if (!file) throw new HandledError('That file is not part of the last scan.', 'NOT_FOUND');
 
     return resolveWithinProject(project.rootPath, relativePath);
@@ -71,7 +71,9 @@ export function systemHandlers(store: DataStore, databasePath: () => string): Ha
       const project = store.projects.findById(projectId);
       if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
 
-      const file = store.files.findByPath(projectId, relativePath);
+      // Authorized against the inventory rather than the graph subset: every file the scan
+      // inventoried is viewable, not only the ones the dependency graph could parse.
+      const file = store.projectFiles.findByPath(projectId, relativePath);
       if (!file) throw new HandledError('That file is not part of the last scan.', 'NOT_FOUND');
 
       try {

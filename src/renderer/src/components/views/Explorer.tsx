@@ -175,14 +175,18 @@ export function Explorer(): JSX.Element {
     });
   }, []);
 
-  // The tree is built from a path-only search so the whole file list is available offline.
+  // The tree is built from the complete inventory.
+  //
+  // It previously came from a search for "." capped at 200 results, which quietly dropped
+  // every extensionless file (no dot to match) and truncated any project past 200 files —
+  // so the tree could look nearly empty even when the scan had found everything.
   useEffect(() => {
     if (!project) return;
     let cancelled = false;
 
-    invoke('search:query', { projectId: project.id, query: '.', types: ['file'], limit: 200 })
-      .then((found) => {
-        if (!cancelled) setFilePaths(found.map((entry) => entry.path));
+    invoke('inventory:list', { projectId: project.id })
+      .then((files) => {
+        if (!cancelled) setFilePaths(files.map((file) => file.relativePath));
       })
       .catch(() => undefined);
 
@@ -220,7 +224,7 @@ export function Explorer(): JSX.Element {
 
   const tree = useMemo(() => buildTree(filePaths), [filePaths]);
 
-  if (!project || !stats || stats.totalFiles === 0) {
+  if (!project || !stats) {
     return (
       <EmptyState
         title="Nothing to explore yet"

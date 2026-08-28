@@ -32,13 +32,13 @@ function textClassification(absolutePath: string, bytes: Uint8Array): FileClassi
   };
 }
 
-function detectEncoding(bytes: Uint8Array): string {
+export function detectEncoding(bytes: Uint8Array): string {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
   return 'utf-8';
 }
 
-function isDecodableText(bytes: Uint8Array, encoding: string): boolean {
+export function isDecodableText(bytes: Uint8Array, encoding: string): boolean {
   const body = encoding === 'utf-8' && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
     ? bytes.subarray(3)
     : encoding.startsWith('utf-16')
@@ -98,4 +98,19 @@ export async function classifyProjectFile(
   }
 
   return textClassification(absolutePath, bytes);
+}
+
+/**
+ * Decodes bytes using the encoding the classifier detected, stripping any byte-order mark so
+ * the first character of the file is real content rather than an invisible marker.
+ */
+export function decodeText(bytes: Uint8Array, encoding: string): string {
+  const hasUtf8Bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  const body =
+    encoding === 'utf-8' && hasUtf8Bom
+      ? bytes.subarray(3)
+      : encoding.startsWith('utf-16')
+        ? bytes.subarray(2)
+        : bytes;
+  return new TextDecoder(encoding).decode(body);
 }

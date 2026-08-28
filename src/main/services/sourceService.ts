@@ -1,7 +1,16 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import ts from 'typescript';
 import { MAX_SOURCE_BYTES, MAX_SOURCE_LINES } from '@shared/constants';
-import type { SourceLine, SourceSpan, SourceTokenKind } from '@shared/types';
+import type {
+  SourceDocument,
+
+  SourceSpan,
+  SourceTokenKind,
+  SourceUnavailableDocument,
+  SourceUnavailableReason,
+} from '@shared/types';
+import { decodeText, detectEncoding, isDecodableText } from './fileClassificationService';
 
 /**
  * Tokenises source in the main process rather than the renderer.
@@ -61,31 +70,90 @@ function pushSpan(lines: SourceSpan[][], span: SourceSpan): void {
   }
 }
 
-export interface ReadSourceResult {
-  relativePath: string;
-  lines: SourceLine[];
-  truncated: boolean;
-  totalLines: number;
-  sizeBytes: number;
+function unavailable(
+  relativePath: string,
+  reason: SourceUnavailableReason,
+  message: string,
+  sizeBytes: number,
+): SourceUnavailableDocument {
+  return { kind: 'unavailable', relativePath, reason, message, sizeBytes };
 }
 
+/**
+ * Reads one project file for the viewer.
+ *
+ * Any file in the inventory can be requested, not just graph sources, so this must answer for
+ * binaries, oversized files, symlinks, and undecodable content too. Each of those returns an
+ * explained `unavailable` result rather than an empty document, so the UI can say what is
+ * actually going on instead of appearing broken.
+ */
 export async function readSource(
   absolutePath: string,
   relativePath: string,
-): Promise<ReadSourceResult> {
-  const stats = await fs.stat(absolutePath);
+): Promise<SourceDocument> {
+  // lstat, not stat: a symlink must be reported as itself rather than silently followed.
+  const stats = await fs.lstat(absolutePath);
 
-  if (stats.size > MAX_SOURCE_BYTES) {
-    return {
+  if (stats.isSymbolicLink()) {
+    return unavailable(
       relativePath,
-      lines: [],
-      truncated: true,
-      totalLines: 0,
-      sizeBytes: stats.size,
-    };
+      'symlink',
+      'This entry is a symbolic link. TraceDeck never follows links, so its target is not read.',
+      0,
+    );
   }
 
-  const text = await fs.readFile(absolutePath, 'utf8');
+  if (!stats.isFile()) {
+    return unavailable(relativePath, 'unreadable', 'This entry is not a regular file.', 0);
+  }
+
+  if (stats.size > MAX_SOURCE_BYTES) {
+    return unavailable(
+      relativePath,
+      'too-large',
+      `This file is ${(stats.size / 1024 / 1024).toFixed(1)} MB, larger than the ${Math.round(
+        MAX_SOURCE_BYTES / 1024 / 1024,
+      )} MB the viewer will load. Open it in your editor instead.`,
+      stats.size,
+    );
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(absolutePath);
+  } catch {
+    return unavailable(
+      relativePath,
+      'unreadable',
+      'This file could not be read from disk. It may have been moved, or permission was denied.',
+      stats.size,
+    );
+  }
+
+  // Detection is shared with the inventory classifier so the viewer and the scan never
+  // disagree about whether a given file is text.
+  const encoding = detectEncoding(bytes);
+  if (!isDecodableText(bytes, encoding)) {
+    return unavailable(
+      relativePath,
+      'binary',
+      'This file is binary, so there is no text to display.',
+      stats.size,
+    );
+  }
+
+  let text: string;
+  try {
+    text = decodeText(bytes, encoding);
+  } catch {
+    return unavailable(
+      relativePath,
+      'unsupported-encoding',
+      `This file uses the ${encoding} encoding, which the viewer cannot decode.`,
+      stats.size,
+    );
+  }
+
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
     /* skipTrivia */ false,
@@ -109,10 +177,16 @@ export async function readSource(
   const kept = truncated ? lineSpans.slice(0, MAX_SOURCE_LINES) : lineSpans;
 
   return {
+    kind: 'text',
     relativePath,
     lines: kept.map((spans, index) => ({ number: index + 1, spans })),
     truncated,
     totalLines,
     sizeBytes: stats.size,
+    encoding,
+    contentHash: createHash('sha256').update(bytes).digest('hex'),
+    text,
+    // A truncated view holds only part of the file, so saving it would destroy the rest.
+    editable: !truncated,
   };
 }

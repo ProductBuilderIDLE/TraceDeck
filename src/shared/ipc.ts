@@ -19,6 +19,7 @@ import type {
   ScanProgress,
   SearchResult,
   SourceDocument,
+  ProjectFile,
 } from './types';
 import type { ThemeId } from './theme';
 
@@ -157,6 +158,8 @@ export interface IpcContract {
     response: { version: string; electron: string; databasePath: string };
   };
   'system:set-theme': { request: { theme: ThemeId }; response: void };
+  /** Every inventoried file for a project, sorted by path, with no implicit cap. */
+  'inventory:list': { request: { projectId: number }; response: ProjectFile[] };
   'source:read': {
     request: { projectId: number; relativePath: string };
     response: SourceDocument;
@@ -195,6 +198,7 @@ export const IPC_CHANNELS = [
   'system:reveal-path',
   'system:app-info',
   'system:set-theme',
+  'inventory:list',
   'source:read',
 ] as const satisfies readonly IpcChannel[];
 

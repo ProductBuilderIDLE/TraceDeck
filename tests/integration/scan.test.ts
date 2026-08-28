@@ -243,8 +243,12 @@ describe('end-to-end scan', () => {
 
     const first = await scan();
     const second = await scan();
+    const firstLimitations = first.summary?.limitations.join(' ') ?? '';
 
-    expect(first.summary?.limitations.join(' ')).toMatch(/\.vue source container/);
+    expect(firstLimitations).toMatch(/\.vue source container/);
+    expect(firstLimitations).toMatch(/external script block.*\.\/external-widget\.ts.*not analysed/i);
+    expect(firstLimitations).toMatch(/unsupported language.*coffee.*not analysed/i);
+    expect(second.summary?.parsedFiles).toBe(0);
     expect(second.summary?.limitations).toEqual(first.summary?.limitations);
   });
 });

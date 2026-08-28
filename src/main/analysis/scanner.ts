@@ -26,6 +26,7 @@ import {
   type DiscoveryResult,
 } from './discovery';
 import {
+  inspectSourceContainerLimitations,
   parseSourceFile,
   sourceContainerLimitations,
   type ParsedFile,
@@ -382,6 +383,12 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
         limitations.push(`${file.relativePath}: file could not be read during this scan.`);
         continue;
       }
+
+      limitations.push(
+        ...inspectSourceContainerLimitations(file.relativePath, raw).map(
+          (limitation) => `${file.relativePath}: ${limitation}`,
+        ),
+      );
 
       const hash = hashContent(raw);
       hashes.set(file.relativePath, hash);

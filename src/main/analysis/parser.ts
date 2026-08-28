@@ -159,6 +159,15 @@ function scriptRegions(contents: string): ScriptExtraction {
   return { regions, limitations };
 }
 
+/**
+ * Inspects source-container boundaries without invoking the TypeScript parser. Scanner uses this
+ * on every already-read file so caveats remain available when an unchanged graph row is reused.
+ */
+export function inspectSourceContainerLimitations(fileName: string, contents: string): string[] {
+  if (!sourceContainerExtension(fileName)) return [];
+  return [...sourceContainerLimitations(fileName), ...scriptRegions(contents).limitations];
+}
+
 function astroFrontmatterRegion(contents: string): SourceRegion | null {
   const match = /^\uFEFF?---[^\S\r\n]*(?:\r?\n)[\s\S]*?(?:\r?\n)---(?=\r?\n|$)/.exec(contents);
   if (!match) return null;

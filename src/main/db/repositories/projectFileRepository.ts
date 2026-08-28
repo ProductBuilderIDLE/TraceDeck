@@ -49,8 +49,6 @@ export interface ProjectFileUpsertInput {
   analysisReason: string;
 }
 
-interface CapabilityCountRow extends ProjectFileCapabilityCounts {}
-
 export class ProjectFileRepository {
   constructor(private readonly db: Db) {}
 
@@ -161,7 +159,7 @@ export class ProjectFileRepository {
   countsByCapability(projectId: number): ProjectFileCapabilityCounts {
     return (
       this.db
-        .prepare<[number], CapabilityCountRow>(
+        .prepare<[number], ProjectFileCapabilityCounts>(
           `SELECT
              COUNT(*) AS total,
              COUNT(CASE WHEN analysis_status = 'eligible' THEN 1 END) AS eligible,

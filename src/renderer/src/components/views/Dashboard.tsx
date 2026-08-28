@@ -19,6 +19,31 @@ function PrivacyBanner(): JSX.Element {
   );
 }
 
+function LimitationsCard({ limitations }: { limitations: readonly string[] }): JSX.Element | null {
+  if (limitations.length === 0) return null;
+
+  return (
+    <Card title={`Analysis limitations (${limitations.length})`}>
+      <p className="mb-2 text-[11px] leading-relaxed text-ink-muted">
+        These are things this scan could not determine. Results elsewhere in the app should be read
+        with them in mind.
+      </p>
+      <ul className="max-h-56 space-y-1 overflow-y-auto">
+        {limitations.slice(0, 60).map((limitation) => (
+          <li key={limitation} className="mono-path text-ink-faint">
+            {limitation}
+          </li>
+        ))}
+      </ul>
+      {limitations.length > 60 && (
+        <p className="mt-2 text-[11px] text-ink-faint">
+          …and {limitations.length - 60} more.
+        </p>
+      )}
+    </Card>
+  );
+}
+
 export function Dashboard(): JSX.Element {
   const project = useAppStore((state) => state.currentProject);
   const stats = useAppStore((state) => state.stats);
@@ -43,7 +68,7 @@ export function Dashboard(): JSX.Element {
     );
   }
 
-  if (!lastScan || !stats || stats.totalFiles === 0) {
+  if (!lastScan || !stats) {
     return (
       <EmptyState
         title="This project has not been scanned yet"
@@ -54,6 +79,30 @@ export function Dashboard(): JSX.Element {
           </Button>
         }
       />
+    );
+  }
+
+  if (stats.totalFiles === 0) {
+    const explanation =
+      lastScan.summary?.limitations.find((limitation) =>
+        limitation.startsWith('No supported source files'),
+      ) ??
+      'The completed scan did not find a source file supported by the dependency graph.';
+
+    return (
+      <div className="space-y-4 p-5">
+        <PrivacyBanner />
+        <EmptyState
+          title="No supported source files found"
+          description={explanation}
+          action={
+            <Button variant="primary" disabled={scanning} onClick={() => void startScan(false)}>
+              {scanning ? 'Scanning…' : 'Scan again'}
+            </Button>
+          }
+        />
+        <LimitationsCard limitations={lastScan.summary?.limitations ?? []} />
+      </div>
     );
   }
 
@@ -140,26 +189,7 @@ export function Dashboard(): JSX.Element {
         )}
       </Card>
 
-      {summary && summary.limitations.length > 0 && (
-        <Card title={`Analysis limitations (${summary.limitations.length})`}>
-          <p className="mb-2 text-[11px] leading-relaxed text-ink-muted">
-            These are things this scan could not determine. Results elsewhere in the app should be
-            read with them in mind.
-          </p>
-          <ul className="max-h-56 space-y-1 overflow-y-auto">
-            {summary.limitations.slice(0, 60).map((limitation) => (
-              <li key={limitation} className="mono-path text-ink-faint">
-                {limitation}
-              </li>
-            ))}
-          </ul>
-          {summary.limitations.length > 60 && (
-            <p className="mt-2 text-[11px] text-ink-faint">
-              …and {summary.limitations.length - 60} more.
-            </p>
-          )}
-        </Card>
-      )}
+      {summary && <LimitationsCard limitations={summary.limitations} />}
     </div>
   );
 }

@@ -89,6 +89,15 @@ export interface Scan {
 
 export interface ScanSummary {
   totalFiles: number;
+  /** Every retained project entry, including non-graph assets. */
+  inventoryFiles: number;
+  /** Supported source files retained in the dependency graph. */
+  graphEligibleFiles: number;
+  textOnlyFiles: number;
+  binaryFiles: number;
+  ignoredFiles: number;
+  /** Entries excluded from analysis or unavailable for safe analysis. */
+  unavailableFiles: number;
   parsedFiles: number;
   skippedUnchangedFiles: number;
   removedFiles: number;
@@ -463,7 +472,13 @@ export interface RiskScore {
 export interface DashboardStats {
   project: Project;
   lastScan: Scan | null;
+  /** Authoritative project inventory total, not the dependency-graph subset. */
   totalFiles: number;
+  graphEligibleFiles: number;
+  textOnlyFiles: number;
+  binaryFiles: number;
+  ignoredFiles: number;
+  unavailableFiles: number;
   totalSymbols: number;
   totalEdges: number;
   cycleCount: number;

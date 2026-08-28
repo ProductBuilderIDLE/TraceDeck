@@ -201,4 +201,59 @@ describe('parser resilience', () => {
     expect(result.imports).toEqual([]);
     expect(result.symbols).toEqual([]);
   });
+
+  it.each([
+    {
+      fileName: 'Widget.vue',
+      source: [
+        '<template><div /></template>',
+        '<script lang="ts">',
+        `import { shared } from './shared';`,
+        'export const widgetValue = shared;',
+        '</script>',
+      ].join('\n'),
+      symbol: 'widgetValue',
+      line: 4,
+    },
+    {
+      fileName: 'Panel.svelte',
+      source: [
+        '<script lang="ts">',
+        `import { shared } from './shared';`,
+        'export const panelValue = shared;',
+        '</script>',
+        '<p>{panelValue}</p>',
+      ].join('\n'),
+      symbol: 'panelValue',
+      line: 3,
+    },
+    {
+      fileName: 'Page.astro',
+      source: [
+        '---',
+        `import { shared } from './shared';`,
+        'export const pageValue = shared;',
+        '---',
+        '<p>{pageValue}</p>',
+      ].join('\n'),
+      symbol: 'pageValue',
+      line: 3,
+    },
+  ])('parses the standard script region in $fileName without shifting lines', ({
+    fileName,
+    source,
+    symbol,
+    line,
+  }) => {
+    const result = parse(fileName, source);
+    const limitations = (result as typeof result & { limitations?: string[] }).limitations;
+
+    expect(result.imports).toEqual([
+      expect.objectContaining({ specifier: './shared' }),
+    ]);
+    expect(result.symbols).toEqual([
+      expect.objectContaining({ name: symbol, startLine: line }),
+    ]);
+    expect(limitations?.join(' ')).toMatch(/script.*only|template.*not.*analysed/i);
+  });
 });

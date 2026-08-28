@@ -5,6 +5,8 @@ import { loadProjectTsConfig, NO_TSCONFIG, expandAlias } from '@main/analysis/ts
 import { toPosixPath } from '@main/utils/glob';
 
 const FIXTURE_ROOT = resolve(__dirname, '../../fixtures/sample-project');
+const CONTAINER_ROOT = resolve(__dirname, '../../fixtures/source-containers-project');
+const MONOREPO_ROOT = resolve(__dirname, '../../fixtures/monorepo-project');
 
 function abs(relativePath: string): string {
   return toPosixPath(resolve(FIXTURE_ROOT, relativePath));
@@ -71,6 +73,31 @@ describe('relative import resolution', () => {
 
     expect(result).toMatchObject({ status: 'unresolved', reason: 'file-not-found' });
   });
+
+  it('resolves extensionless imports to Vue, Svelte, and Astro source containers', () => {
+    const knownFiles = buildKnownFileIndex(
+      ['src/shared.ts', 'src/Widget.vue', 'src/Panel.svelte', 'src/Page.astro'].map((path) =>
+        toPosixPath(resolve(CONTAINER_ROOT, path)),
+      ),
+    );
+    const containerContext: ResolverContext = {
+      rootPath: CONTAINER_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles,
+    };
+    const from = toPosixPath(resolve(CONTAINER_ROOT, 'src/shared.ts'));
+
+    for (const [specifier, fileName] of [
+      ['./Widget', 'Widget.vue'],
+      ['./Panel', 'Panel.svelte'],
+      ['./Page', 'Page.astro'],
+    ] as const) {
+      expect(resolveImport(specifier, from, containerContext), specifier).toMatchObject({
+        status: 'resolved',
+        absolutePath: toPosixPath(resolve(CONTAINER_ROOT, 'src', fileName)),
+      });
+    }
+  });
 });
 
 describe('path alias resolution', () => {
@@ -116,6 +143,24 @@ describe('path alias resolution', () => {
     };
 
     expect(expandAlias('@app/db/client', tsConfig)).toEqual([abs('src/db/client')]);
+  });
+
+  it('uses the nearest nested workspace config for the importing file', () => {
+    const importer = toPosixPath(resolve(MONOREPO_ROOT, 'apps/web/src/index.ts'));
+    const target = toPosixPath(resolve(MONOREPO_ROOT, 'apps/web/src/lib/value.ts'));
+    const nestedConfig = loadProjectTsConfig(resolve(MONOREPO_ROOT, 'apps/web'));
+    const workspaceContext = {
+      rootPath: MONOREPO_ROOT,
+      tsConfig: NO_TSCONFIG,
+      tsConfigs: [nestedConfig],
+      knownFiles: buildKnownFileIndex([importer, target]),
+    } as ResolverContext & { tsConfigs: ReturnType<typeof loadProjectTsConfig>[] };
+
+    expect(resolveImport('@web/lib/value', importer, workspaceContext)).toEqual({
+      status: 'resolved',
+      absolutePath: target,
+      viaAlias: true,
+    });
   });
 });
 

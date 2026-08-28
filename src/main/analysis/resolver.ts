@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { NON_SOURCE_IMPORT_EXTENSIONS, RESOLUTION_EXTENSIONS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
 import { expandAlias, type ProjectTsConfig } from './tsconfig';
@@ -25,6 +25,8 @@ export type ResolutionResult =
 export interface ResolverContext {
   rootPath: string;
   tsConfig: ProjectTsConfig;
+  /** Root and nested configs; the deepest config containing the importer wins. */
+  tsConfigs?: readonly ProjectTsConfig[];
   /** Absolute paths of every file in the scan, in posix form, for existence probing. */
   knownFiles: ReadonlySet<string>;
   /** What the project's package.json files declare, used to identify real dependencies. */
@@ -83,6 +85,28 @@ function isRelativeSpecifier(specifier: string): boolean {
   return specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..';
 }
 
+function isInside(directory: string, filePath: string): boolean {
+  const relativePath = relative(directory, filePath);
+  return (
+    relativePath.length === 0 ||
+    (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
+  );
+}
+
+function configForImporter(fromAbsolutePath: string, context: ResolverContext): ProjectTsConfig {
+  const candidates = (context.tsConfigs ?? [])
+    .filter((config): config is ProjectTsConfig & { configPath: string } =>
+      config.configPath !== null && isInside(dirname(config.configPath), fromAbsolutePath),
+    )
+    .sort(
+      (left, right) =>
+        dirname(right.configPath).length - dirname(left.configPath).length ||
+        toPosixPath(left.configPath).localeCompare(toPosixPath(right.configPath)),
+    );
+
+  return candidates[0] ?? context.tsConfig;
+}
+
 /**
  * Resolves a module specifier to a file inside the project.
  *
@@ -95,7 +119,8 @@ export function resolveImport(
   fromAbsolutePath: string,
   context: ResolverContext,
 ): ResolutionResult {
-  const { tsConfig, knownFiles } = context;
+  const { knownFiles } = context;
+  const tsConfig = configForImporter(fromAbsolutePath, context);
   const manifests = context.manifests ?? EMPTY_MANIFESTS;
   const trimmed = specifier.trim();
 

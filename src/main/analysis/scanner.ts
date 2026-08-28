@@ -19,16 +19,27 @@ import {
   type ExportedSymbolInput,
 } from './algorithms/unusedExports';
 import { buildGraph, type FileToBuild } from './graph';
-import { discoverFiles, type DiscoveredFile } from './discovery';
-import { parseSourceFile, type ParsedFile, type ParsedImport } from './parser';
+import {
+  discoverFiles,
+  type DiscoveredFile,
+  type DiscoveryExclusion,
+  type DiscoveryResult,
+} from './discovery';
+import {
+  parseSourceFile,
+  sourceContainerLimitations,
+  type ParsedFile,
+  type ParsedImport,
+} from './parser';
 import { buildKnownFileIndex, type ResolverContext } from './resolver';
 import { packageNameOf, readProjectManifests } from './packageManifest';
 import { runTypeScriptDiagnostics } from './diagnostics';
-import { loadProjectTsConfig } from './tsconfig';
+import { discoverProjectTsConfigs, loadProjectTsConfig } from './tsconfig';
 import type { DataStore } from '../db';
 import type { EdgeInsertInput } from '../db/repositories/edgeRepository';
 import type { FileUpsertInput } from '../db/repositories/fileRepository';
 import type { FindingInsertInput } from '../db/repositories/findingRepository';
+import type { ProjectFileUpsertInput } from '../db/repositories/projectFileRepository';
 import type { SymbolInsertInput } from '../db/repositories/symbolRepository';
 import { fingerprint, hashContent } from '../utils/hashing';
 import { toPosixPath } from '../utils/glob';
@@ -56,6 +67,120 @@ const ANALYSED_FINDING_TYPES: FindingType[] = [
   'unresolved-import',
   'type-error',
 ];
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function examplesOf(exclusions: readonly DiscoveryExclusion[], limit = 3): string {
+  const paths = exclusions.map((entry) => entry.relativePath).sort().slice(0, limit);
+  const remaining = exclusions.length - paths.length;
+  return `${paths.join(', ')}${remaining > 0 ? `, and ${remaining} more` : ''}`;
+}
+
+/** Turns exhaustive discovery evidence into a bounded, deterministic set of UI limitations. */
+function discoveryLimitations(rootPath: string, result: DiscoveryResult): string[] {
+  const { diagnostics, files } = result;
+  const limitations: string[] = [];
+  const excludedCount = diagnostics.exclusions.length;
+
+  if (files.length === 0) {
+    limitations.push(
+      `No supported source files were found under "${rootPath}" after considering ` +
+        `${plural(diagnostics.filesConsidered, 'file')}. TraceDeck currently builds its ` +
+        'dependency graph from JavaScript, TypeScript, Vue, Svelte, and Astro source files.',
+    );
+  } else if (files.length === 1) {
+    limitations.push(
+      `Only 1 supported source file was found under "${rootPath}" after considering ` +
+        `${plural(diagnostics.filesConsidered, 'file')}. The exclusions below explain the ` +
+        'scope of this near-empty graph.',
+    );
+  }
+
+  limitations.push(
+    `Discovery visited ${plural(diagnostics.directoriesVisited, 'directory', 'directories')}, ` +
+      `considered ${plural(diagnostics.filesConsidered, 'file')}, included ` +
+      `${plural(files.length, 'source file')}, and recorded ${plural(excludedCount, 'explicit exclusion')}.`,
+  );
+
+  const unsupported = diagnostics.exclusions.filter(
+    (entry) => entry.kind === 'unsupported-extension',
+  );
+  if (unsupported.length > 0) {
+    const counts = new Map<string, number>();
+    for (const entry of unsupported) counts.set(entry.detail, (counts.get(entry.detail) ?? 0) + 1);
+    const extensions = [...counts.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([extension, count]) => `${extension} (${count})`)
+      .join(', ');
+    limitations.push(
+      `Discovery left ${plural(unsupported.length, 'file with an unsupported graph extension')} ` +
+        `outside the dependency graph: ${extensions}.`,
+    );
+  }
+
+  const groupedKinds = new Set([
+    'always-excluded-directory',
+    'user-exclude',
+    'gitignore',
+    'test-file-disabled',
+    'duplicate-real-path',
+    'non-regular-entry',
+  ]);
+  const groups = new Map<string, DiscoveryExclusion[]>();
+  for (const exclusion of diagnostics.exclusions) {
+    if (!groupedKinds.has(exclusion.kind)) continue;
+    const key = `${exclusion.kind}\0${exclusion.detail}`;
+    const entries = groups.get(key) ?? [];
+    entries.push(exclusion);
+    groups.set(key, entries);
+  }
+
+  for (const [key, entries] of [...groups.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const separator = key.indexOf('\0');
+    const kind = key.slice(0, separator);
+    const detail = key.slice(separator + 1);
+    const count = entries.length;
+    const examples = examplesOf(entries);
+
+    if (kind === 'always-excluded-directory') {
+      limitations.push(
+        `Discovery skipped ${plural(count, `directory named "${detail}"`, `directories named "${detail}"`)} ` +
+          `by the built-in exclusion policy (paths: ${examples}).`,
+      );
+    } else if (kind === 'user-exclude') {
+      limitations.push(
+        `Discovery excluded ${plural(count, 'path')} matching the configured pattern ` +
+          `"${detail}" (paths: ${examples}).`,
+      );
+    } else if (kind === 'gitignore') {
+      limitations.push(
+        `Discovery excluded ${plural(count, 'path')} by .gitignore rule ${detail} ` +
+          `(paths: ${examples}).`,
+      );
+    } else if (kind === 'test-file-disabled') {
+      limitations.push(
+        `Discovery excluded ${plural(count, 'test file')} because test-file scanning is disabled ` +
+          `(paths: ${examples}).`,
+      );
+    } else if (kind === 'duplicate-real-path') {
+      limitations.push(
+        `Discovery skipped ${plural(count, 'duplicate real path')} to prevent a directory cycle ` +
+          `(paths: ${examples}).`,
+      );
+    } else {
+      limitations.push(
+        `Discovery skipped ${plural(count, 'non-regular filesystem entry')} ` +
+          `(paths: ${examples}).`,
+      );
+    }
+  }
+
+  return limitations;
+}
 
 /**
  * Reconstructs enough of a parse result from stored rows to participate in graph building
@@ -111,7 +236,7 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
     });
   }
 
-  return { imports, symbols, parseErrors: [] };
+  return { imports, symbols, parseErrors: [], limitations: [] };
 }
 
 /** Files with no resolved dependents are the best available guess at an entry point. */
@@ -152,20 +277,75 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
   try {
     report({ phase: 'discovering', processed: 0, total: 0, message: 'Finding source files…' });
 
-    const { files: discovered, skipped } = await discoverFiles({
+    const discovery = await discoverFiles({
       rootPath: project.rootPath,
       respectGitignore: project.configuration.respectGitignore,
       includeTestFiles: project.configuration.includeTestFiles,
       excludePatterns: project.configuration.excludePatterns,
     });
+    const { files: discovered, skipped } = discovery;
     checkCancelled();
+
+    const storedInventory = store.projectFiles.listByProject(project.id);
+    const inventoryUpserts: ProjectFileUpsertInput[] = discovery.inventory.map((entry) => ({
+      projectId: project.id,
+      relativePath: entry.relativePath,
+      absolutePath: entry.absolutePath,
+      scanId: scan.id,
+      entryKind: entry.entryKind,
+      extension: entry.extension,
+      sizeBytes: entry.sizeBytes,
+      modifiedAt: entry.modifiedAt,
+      contentKind: entry.contentKind,
+      encoding: entry.encoding,
+      contentHash: entry.contentHash,
+      isGitIgnored: entry.isGitIgnored,
+      gitignoreRule: entry.gitignoreRule,
+      isUserExcluded: entry.isUserExcluded,
+      analysisStatus: entry.analysisStatus,
+      analysisReason: entry.analysisReason,
+    }));
+    store.projectFiles.upsertMany(inventoryUpserts);
+
+    const inventoryPaths = new Set(discovery.inventory.map((entry) => entry.relativePath));
+    store.projectFiles.removeByIds(
+      storedInventory
+        .filter((entry) => !inventoryPaths.has(entry.relativePath))
+        .map((entry) => entry.id),
+    );
+
+    limitations.push(...discoveryLimitations(project.rootPath, discovery));
 
     for (const entry of skipped) {
       limitations.push(`${entry.relativePath}: ${entry.reason}`);
     }
+    for (const file of discovered) {
+      limitations.push(
+        ...sourceContainerLimitations(file.relativePath).map(
+          (limitation) => `${file.relativePath}: ${limitation}`,
+        ),
+      );
+    }
 
     const tsConfig = loadProjectTsConfig(project.rootPath);
-    limitations.push(...tsConfig.warnings);
+    const tsConfigs = discoverProjectTsConfigs(project.rootPath);
+    if (tsConfig.configPath === null && tsConfigs.length > 0) {
+      limitations.push(
+        `No compiler configuration was found at the project root. Import resolution loaded ` +
+          `${plural(tsConfigs.length, 'nested tsconfig/jsconfig')} and selects the nearest one ` +
+          'for each source file.',
+      );
+    } else {
+      limitations.push(...tsConfig.warnings);
+    }
+    for (const config of tsConfigs) {
+      if (config.configPath === tsConfig.configPath) continue;
+      limitations.push(
+        ...config.warnings.map(
+          (warning) => `${toPosixPath(config.configPath ?? project.rootPath)}: ${warning}`,
+        ),
+      );
+    }
 
     const manifests = await readProjectManifests(project.rootPath);
 
@@ -303,6 +483,7 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
     const context: ResolverContext = {
       rootPath: project.rootPath,
       tsConfig,
+      tsConfigs,
       knownFiles: buildKnownFileIndex(discovered.map((file) => toPosixPath(file.absolutePath))),
       manifests,
     };
@@ -628,8 +809,21 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
     store.findings.replaceForScan(project.id, scan.id, ANALYSED_FINDING_TYPES, findings);
 
     // --- Complete ---
+    const inventoryCounts = store.projectFiles.countsByCapability(project.id);
+    const graphEligibleFiles = store.files.countByProject(project.id);
+    const unavailableFiles =
+      inventoryCounts.excluded +
+      inventoryCounts.oversize +
+      inventoryCounts.unreadable +
+      inventoryCounts.symlink;
     const summary: ScanSummary = {
       totalFiles: discovered.length,
+      inventoryFiles: inventoryCounts.total,
+      graphEligibleFiles,
+      textOnlyFiles: inventoryCounts.textOnly,
+      binaryFiles: inventoryCounts.binary,
+      ignoredFiles: inventoryCounts.gitIgnored,
+      unavailableFiles,
       parsedFiles: changed.length,
       skippedUnchangedFiles: unchanged.length,
       removedFiles,

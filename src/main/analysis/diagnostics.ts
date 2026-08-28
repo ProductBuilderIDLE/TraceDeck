@@ -1,9 +1,14 @@
-import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import ts from 'typescript';
-import { ALWAYS_EXCLUDED_DIRS, MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
+import { MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
-import type { ProjectTsConfig } from './tsconfig';
+import {
+  discoverTsConfigs,
+  MAX_PROJECT_CONFIGS,
+  type ProjectTsConfig,
+} from './tsconfig';
+
+export { discoverTsConfigs } from './tsconfig';
 
 export type DiagnosticCategory = 'error' | 'warning' | 'suggestion' | 'message';
 
@@ -40,12 +45,6 @@ const CATEGORY_MAP: Record<ts.DiagnosticCategory, DiagnosticCategory> = {
   [ts.DiagnosticCategory.Message]: 'message',
 };
 
-const CONFIG_FILENAMES = ['tsconfig.json', 'jsconfig.json'];
-const excludedDirNames = new Set(ALWAYS_EXCLUDED_DIRS);
-
-/** How many compiler configurations one scan will check before stopping. */
-const MAX_CONFIGS = 12;
-
 export interface DiagnosticsOptions {
   rootPath: string;
   tsConfig: ProjectTsConfig;
@@ -58,47 +57,6 @@ function isInsideProject(fileName: string, rootPath: string): boolean {
   const relativePath = relative(rootPath, fileName);
   if (relativePath.startsWith('..') || relativePath.length === 0) return false;
   return !toPosixPath(relativePath).includes('node_modules/');
-}
-
-/**
- * Finds every compiler configuration in the project.
- *
- * A monorepo commonly has no `tsconfig.json` at its root at all — the root holds a
- * `tsconfig.base.json` that packages extend, and the real configurations live one or two
- * levels down in each app. Looking only at the root silently skips type checking for exactly
- * the projects that need it most.
- */
-export function discoverTsConfigs(rootPath: string, maxDepth = 3): string[] {
-  const found: string[] = [];
-
-  const walk = (directory: string, depth: number): void => {
-    if (depth > maxDepth || found.length >= MAX_CONFIGS) return;
-
-    for (const name of CONFIG_FILENAMES) {
-      const candidate = join(directory, name);
-      if (existsSync(candidate)) {
-        found.push(candidate);
-        // One configuration per directory is enough; tsconfig wins over jsconfig.
-        break;
-      }
-    }
-
-    let entries;
-    try {
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      if (excludedDirNames.has(entry.name)) continue;
-      walk(join(directory, entry.name), depth + 1);
-    }
-  };
-
-  walk(rootPath, 0);
-  return found;
 }
 
 interface ResolvedConfig {
@@ -180,9 +138,9 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
           'configurations found in the project was checked separately.',
       );
     }
-    if (discovered.length >= MAX_CONFIGS) {
+    if (discovered.length >= MAX_PROJECT_CONFIGS) {
       limitations.push(
-        `Only the first ${MAX_CONFIGS} compiler configurations were checked.`,
+        `Only the first ${MAX_PROJECT_CONFIGS} compiler configurations were checked.`,
       );
     }
   }

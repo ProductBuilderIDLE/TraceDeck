@@ -33,6 +33,94 @@ export interface ParsedFile {
   imports: ParsedImport[];
   symbols: ParsedSymbol[];
   parseErrors: string[];
+  /** Honest boundaries that did not prevent parsing, such as unanalysed template regions. */
+  limitations: string[];
+}
+
+interface SourceRegion {
+  start: number;
+  end: number;
+}
+
+interface PreparedSource {
+  contents: string;
+  limitations: string[];
+}
+
+const SOURCE_CONTAINER_EXTENSIONS = ['.vue', '.svelte', '.astro'] as const;
+
+function sourceContainerExtension(
+  fileName: string,
+): (typeof SOURCE_CONTAINER_EXTENSIONS)[number] | null {
+  const lowerName = fileName.toLowerCase();
+  return SOURCE_CONTAINER_EXTENSIONS.find((candidate) => lowerName.endsWith(candidate)) ?? null;
+}
+
+/** Limitations are derived from the file type so incremental scans can reproduce them exactly. */
+export function sourceContainerLimitations(fileName: string): string[] {
+  const extension = sourceContainerExtension(fileName);
+  if (!extension) return [];
+  return [
+    `${extension} source container: script regions only were analysed; template, markup, and ` +
+      'style regions were not analysed.',
+  ];
+}
+
+function scriptRegions(contents: string): SourceRegion[] {
+  const regions: SourceRegion[] = [];
+  const blocks = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+
+  for (const match of contents.matchAll(blocks)) {
+    if (match.index === undefined) continue;
+    const openingEnd = match[0].indexOf('>');
+    const closingStart = match[0].toLowerCase().lastIndexOf('</script');
+    if (openingEnd < 0 || closingStart < openingEnd) continue;
+    regions.push({
+      start: match.index + openingEnd + 1,
+      end: match.index + closingStart,
+    });
+  }
+
+  return regions;
+}
+
+function astroFrontmatterRegion(contents: string): SourceRegion | null {
+  const match = /^\uFEFF?---[^\S\r\n]*(?:\r?\n)[\s\S]*?(?:\r?\n)---(?=\r?\n|$)/.exec(contents);
+  if (!match) return null;
+
+  const openingEnd = match[0].indexOf('\n');
+  const closingStart = match[0].lastIndexOf('\n---');
+  if (openingEnd < 0 || closingStart < openingEnd) return null;
+  return { start: openingEnd + 1, end: closingStart + 1 };
+}
+
+/** Keeps source offsets stable by blanking non-script characters but retaining every line break. */
+function maskOutsideRegions(contents: string, regions: readonly SourceRegion[]): string {
+  const masked = contents.replace(/[^\r\n]/g, ' ').split('');
+
+  for (const region of regions) {
+    for (let index = region.start; index < region.end; index += 1) {
+      masked[index] = contents[index] as string;
+    }
+  }
+
+  return masked.join('');
+}
+
+function prepareSource(fileName: string, contents: string): PreparedSource {
+  const extension = sourceContainerExtension(fileName);
+  if (!extension) return { contents, limitations: [] };
+
+  const regions = scriptRegions(contents);
+  if (extension === '.astro') {
+    const frontmatter = astroFrontmatterRegion(contents);
+    if (frontmatter) regions.unshift(frontmatter);
+  }
+
+  return {
+    contents: maskOutsideRegions(contents, regions),
+    limitations: sourceContainerLimitations(fileName),
+  };
 }
 
 function scriptKindFor(fileName: string): ts.ScriptKind {
@@ -89,9 +177,10 @@ function extendsReactComponent(node: ts.ClassDeclaration): boolean {
 }
 
 export function parseSourceFile(fileName: string, contents: string): ParsedFile {
+  const prepared = prepareSource(fileName, contents);
   const sourceFile = ts.createSourceFile(
     fileName,
-    contents,
+    prepared.contents,
     ts.ScriptTarget.Latest,
     /* setParentNodes */ true,
     scriptKindFor(fileName),
@@ -425,5 +514,5 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   ts.forEachChild(sourceFile, visit);
 
-  return { imports, symbols, parseErrors };
+  return { imports, symbols, parseErrors, limitations: prepared.limitations };
 }

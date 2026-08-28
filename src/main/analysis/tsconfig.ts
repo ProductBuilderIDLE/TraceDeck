@@ -1,5 +1,7 @@
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import ts from 'typescript';
+import { ALWAYS_EXCLUDED_DIRS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
 
 export interface PathAlias {
@@ -24,6 +26,8 @@ const CONFIG_FILENAMES: Array<{ name: string; kind: 'tsconfig' | 'jsconfig' }> =
   { name: 'tsconfig.json', kind: 'tsconfig' },
   { name: 'jsconfig.json', kind: 'jsconfig' },
 ];
+const excludedDirNames = new Set(ALWAYS_EXCLUDED_DIRS);
+export const MAX_PROJECT_CONFIGS = 12;
 
 export const NO_TSCONFIG: ProjectTsConfig = {
   configPath: null,
@@ -99,6 +103,55 @@ export function loadProjectTsConfig(rootPath: string): ProjectTsConfig {
       'No tsconfig.json or jsconfig.json was found. Only relative imports can be resolved.',
     ],
   };
+}
+
+/**
+ * Finds compiler configurations in workspace-style projects without entering generated trees.
+ * The cap is deterministic and prevents a repository containing vendored projects from turning
+ * config discovery into an unbounded scan.
+ */
+export function discoverTsConfigs(rootPath: string, maxDepth = 3): string[] {
+  const found: string[] = [];
+
+  const walk = (directory: string, depth: number): void => {
+    if (depth > maxDepth || found.length >= MAX_PROJECT_CONFIGS) return;
+
+    for (const candidate of CONFIG_FILENAMES) {
+      const configPath = join(directory, candidate.name);
+      if (!existsSync(configPath)) continue;
+      found.push(configPath);
+      break;
+    }
+
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (excludedDirNames.has(entry.name)) continue;
+      walk(join(directory, entry.name), depth + 1);
+    }
+  };
+
+  walk(rootPath, 0);
+  return found.sort((left, right) => toPosixPath(left).localeCompare(toPosixPath(right)));
+}
+
+/** Loads every usable root or nested config needed for per-package alias resolution. */
+export function discoverProjectTsConfigs(rootPath: string, maxDepth = 3): ProjectTsConfig[] {
+  const configs = discoverTsConfigs(rootPath, maxDepth)
+    .map((configPath) => loadProjectTsConfig(dirname(configPath)))
+    .filter((config): config is ProjectTsConfig & { configPath: string } =>
+      config.configPath !== null,
+    );
+
+  return configs.sort((left, right) =>
+    toPosixPath(left.configPath).localeCompare(toPosixPath(right.configPath)),
+  );
 }
 
 function extractAliases(

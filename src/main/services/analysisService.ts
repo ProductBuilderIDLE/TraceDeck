@@ -56,6 +56,12 @@ export class AnalysisService {
     const projectId = project.id;
     const index = this.dependencyIndex(projectId);
     const cyclicNodes = nodesInCycles(detectCycles(index));
+    const inventoryCounts = this.store.projectFiles.countsByCapability(projectId);
+    const unavailableFiles =
+      inventoryCounts.excluded +
+      inventoryCounts.oversize +
+      inventoryCounts.unreadable +
+      inventoryCounts.symlink;
 
     const topImpactFiles = this.store.files
       .listByProject(projectId)
@@ -66,7 +72,12 @@ export class AnalysisService {
     return {
       project,
       lastScan: this.store.scans.latestCompletedForProject(projectId),
-      totalFiles: this.store.files.countByProject(projectId),
+      totalFiles: inventoryCounts.total,
+      graphEligibleFiles: this.store.files.countByProject(projectId),
+      textOnlyFiles: inventoryCounts.textOnly,
+      binaryFiles: inventoryCounts.binary,
+      ignoredFiles: inventoryCounts.gitIgnored,
+      unavailableFiles,
       totalSymbols: this.store.symbols.countByProject(projectId),
       totalEdges: this.store.edges.countByProject(projectId),
       cycleCount: this.store.findings.countByType(projectId, 'circular-dependency'),

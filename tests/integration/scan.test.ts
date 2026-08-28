@@ -4,9 +4,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DataStore } from '@main/db';
 import { openDatabase } from '@main/db/connection';
 import { runScan } from '@main/analysis/scanner';
+import { AnalysisService } from '@main/services/analysisService';
 import type { CycleDetails, Project, UnusedExportDetails } from '@shared/types';
 
 const FIXTURE_ROOT = resolve(__dirname, '../fixtures/sample-project');
+
+function fixture(name: string): string {
+  return resolve(__dirname, `../fixtures/${name}`);
+}
 
 let store: DataStore;
 let project: Project;
@@ -125,6 +130,110 @@ describe('end-to-end scan', () => {
 
     expect(second).toEqual(first);
   });
+
+  it('stores the complete mixed-asset inventory separately from graph-eligible files', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+
+    const result = await scan();
+    const stats = new AnalysisService(store).dashboardStats(project);
+    const limitations = result.summary?.limitations.join(' ') ?? '';
+
+    expect(store.projectFiles.listByProject(project.id).map((file) => file.relativePath)).toEqual([
+      '.gitignore',
+      'README.md',
+      'app.js',
+      'index.html',
+      'package.json',
+      'style.css',
+    ]);
+    expect(store.files.countByProject(project.id)).toBe(1);
+    expect(result.summary?.totalFiles).toBe(1);
+    expect(result.summary).toMatchObject({
+      inventoryFiles: 6,
+      graphEligibleFiles: 1,
+      textOnlyFiles: 5,
+      binaryFiles: 0,
+      ignoredFiles: 0,
+      unavailableFiles: 0,
+    });
+    expect(stats).toMatchObject({
+      totalFiles: 6,
+      graphEligibleFiles: 1,
+      textOnlyFiles: 5,
+      binaryFiles: 0,
+      ignoredFiles: 0,
+      unavailableFiles: 0,
+    });
+    expect(limitations).toMatch(/only 1 .*source file/i);
+    expect(limitations).toMatch(/\.html/);
+    expect(limitations).toMatch(/\.css/);
+  });
+
+  it('explains a zero-file scan with the inspected folder and omitted extensions', async () => {
+    project = store.projects.createOrTouch('asset-only-project', fixture('asset-only-project'));
+
+    const result = await scan();
+    const limitations = result.summary?.limitations.join(' ') ?? '';
+
+    expect(result.summary?.totalFiles).toBe(0);
+    expect(limitations).toMatch(/no .*source files/i);
+    expect(limitations).toMatch(/asset-only-project/i);
+    expect(limitations).toMatch(/\.html/);
+    expect(limitations).toMatch(/\.css/);
+    expect(limitations).toMatch(/JavaScript.*TypeScript.*Vue.*Svelte.*Astro/i);
+  });
+
+  it('discovers and resolves imports from Vue, Svelte, and Astro script regions', async () => {
+    project = store.projects.createOrTouch(
+      'source-containers-project',
+      fixture('source-containers-project'),
+    );
+
+    const result = await scan();
+    const edges = store.edges.listByProject(project.id);
+
+    expect(result.summary?.totalFiles).toBe(4);
+    for (const source of ['src/Widget.vue', 'src/Panel.svelte', 'src/Page.astro']) {
+      expect(
+        edges.some(
+          (edge) =>
+            edge.fromNodeId === `file:${source}` && edge.toNodeId === 'file:src/shared.ts',
+        ),
+        source,
+      ).toBe(true);
+    }
+    expect(result.summary?.limitations.join(' ')).toMatch(/script.*only|template.*not.*analysed/i);
+  });
+
+  it('resolves aliases from the nearest child tsconfig in a monorepo', async () => {
+    project = store.projects.createOrTouch('monorepo-project', fixture('monorepo-project'));
+
+    const result = await scan();
+    const unresolved = store.findings
+      .list(project.id, { findingType: 'unresolved-import' })
+      .map((finding) => finding.title);
+
+    expect(result.summary?.totalFiles).toBe(3);
+    expect(unresolved.join(' ')).not.toContain('@web/lib/value');
+    expect(
+      store.edges
+        .listFrom(project.id, 'file:apps/web/src/index.ts')
+        .some((edge) => edge.toNodeId === 'file:apps/web/src/lib/value.ts'),
+    ).toBe(true);
+  });
+
+  it('keeps source-container limitations identical on an incremental scan', async () => {
+    project = store.projects.createOrTouch(
+      'source-containers-project',
+      fixture('source-containers-project'),
+    );
+
+    const first = await scan();
+    const second = await scan();
+
+    expect(first.summary?.limitations.join(' ')).toMatch(/\.vue source container/);
+    expect(second.summary?.limitations).toEqual(first.summary?.limitations);
+  });
 });
 
 describe('incremental rescan', () => {
@@ -199,6 +308,33 @@ describe('incremental rescan', () => {
       .get(project.id);
 
     expect(scanCount?.count).toBe(1);
+  });
+
+  it('removes missing inventory while reusing graph files and retaining current rows after pruning', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const temporaryAsset = join(project.rootPath, 'temporary-notes.txt');
+    await fs.writeFile(temporaryAsset, 'temporary inventory entry\n');
+
+    try {
+      const first = await scan();
+      const graphFileId = store.files.findByPath(project.id, 'app.js')?.id;
+      expect(store.projectFiles.findByPath(project.id, 'temporary-notes.txt')).not.toBeNull();
+
+      await fs.rm(temporaryAsset, { force: true });
+      const second = await scan();
+
+      expect(second.summary?.parsedFiles).toBe(0);
+      expect(second.summary?.skippedUnchangedFiles).toBe(1);
+      expect(store.files.findByPath(project.id, 'app.js')?.id).toBe(graphFileId);
+      expect(store.projectFiles.findByPath(project.id, 'temporary-notes.txt')).toBeNull();
+      expect(store.projectFiles.listByProject(project.id)).toHaveLength(6);
+      expect(
+        store.projectFiles.listByProject(project.id).every((file) => file.scanId === second.id),
+      ).toBe(true);
+      expect(store.scans.findById(first.id)).toBeNull();
+    } finally {
+      await fs.rm(temporaryAsset, { force: true });
+    }
   });
 });
 

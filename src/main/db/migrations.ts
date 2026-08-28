@@ -183,6 +183,22 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: 'scan-snapshots',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE scan_snapshots (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          scan_id            INTEGER NOT NULL,
+          created_at         TEXT    NOT NULL,
+          fingerprints_json  TEXT    NOT NULL
+        );
+        CREATE INDEX idx_snapshots_project ON scan_snapshots(project_id, id DESC);
+      `);
+    },
+  },
 ];
 
 export function currentSchemaVersion(db: Db): number {

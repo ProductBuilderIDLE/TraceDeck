@@ -80,7 +80,11 @@ export function systemHandlers(store: DataStore, databasePath: () => string): Ha
       if (!file) throw new HandledError('That file is not part of the last scan.', 'NOT_FOUND');
 
       try {
-        return await readSource(resolveWithinProject(project.rootPath, relativePath), relativePath);
+        return await readSource(
+          resolveWithinProject(project.rootPath, relativePath),
+          relativePath,
+          project.rootPath,
+        );
       } catch {
         throw new HandledError('That file could not be read from disk.', 'READ_FAILED');
       }

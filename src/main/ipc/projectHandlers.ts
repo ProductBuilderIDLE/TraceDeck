@@ -11,6 +11,8 @@ import {
   requireInt,
   requireStringArray,
 } from '../utils/validation';
+import { startWatchingForProject } from './scanHandlers';
+import { stopWatching } from '../services/watchService';
 import { HandledError, type HandlerMap } from './registry';
 
 function parseConfiguration(raw: unknown): ProjectConfiguration {
@@ -87,12 +89,14 @@ export function projectHandlers(store: DataStore): HandlerMap {
       if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
 
       store.projects.touch(projectId);
+      startWatchingForProject(store, projectId);
       return store.projects.findById(projectId) ?? project;
     },
 
     'project:remove': async (payload) => {
       const value = asObject(payload);
       const projectId = requireInt(value['projectId'], 'projectId', 1);
+      stopWatching(projectId);
       // Only the app's own analysis rows are deleted; the scanned folder is never touched.
       return { removed: store.projects.remove(projectId) };
     },

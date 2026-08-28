@@ -3,15 +3,24 @@ import type {
   ArchitectureRuleConfiguration,
   ArchitectureRuleType,
   BlastRadiusResult,
+  BlameLine,
+  ChurnEntry,
+  CoChangeEntry,
   DashboardStats,
+  DiffImpactResult,
   EdgeType,
+  EditorConfigSettings,
   FileDetail,
   Finding,
   FindingType,
+  GitDiffFile,
   GraphPayload,
   NodeType,
+  PreviewFinding,
   Project,
   ProjectConfiguration,
+  ProjectMetrics,
+  RenameEntry,
   ReportConfiguration,
   RiskScore,
   SavedReport,
@@ -20,6 +29,8 @@ import type {
   SearchResult,
   SourceDocument,
   ProjectFile,
+  TextSearchHit,
+  SymbolKind,
 } from './types';
 import type { ThemeId } from './theme';
 
@@ -66,6 +77,8 @@ export interface SearchRequest {
   query: string;
   types?: NodeType[];
   limit?: number;
+  exportedOnly?: boolean;
+  kinds?: SymbolKind[];
 }
 
 export interface FindingsRequest {
@@ -169,6 +182,50 @@ export interface IpcContract {
     request: { projectId: number; relativePath: string };
     response: SourceDocument;
   };
+  'search:text': {
+    request: { projectId: number; query: string; limit?: number };
+    response: TextSearchHit[];
+  };
+  'analysis:preview': {
+    request: { projectId: number; relativePath: string; text: string };
+    response: PreviewFinding[];
+  };
+  'analysis:diff-impact': {
+    request: { projectId: number; changedPaths: string[] };
+    response: DiffImpactResult;
+  };
+  'analysis:folder-metrics': { request: { projectId: number }; response: ProjectMetrics };
+  'git:changed-files': {
+    request: { projectId: number; ref?: string };
+    response: GitDiffFile[];
+  };
+  'git:diff': {
+    request: { projectId: number; relativePath: string; ref?: string };
+    response: { diff: string };
+  };
+  'git:blame': { request: { projectId: number; relativePath: string }; response: BlameLine[] };
+  'git:churn': { request: { projectId: number }; response: ChurnEntry[] };
+  'git:cochange': {
+    request: { projectId: number; relativePath: string };
+    response: CoChangeEntry[];
+  };
+  'git:renames': {
+    request: { projectId: number; relativePath: string };
+    response: RenameEntry[];
+  };
+  'git:mergetool': { request: { projectId: number; relativePath: string }; response: { started: boolean } };
+  'source:format': {
+    request: { projectId: number; relativePath: string; text: string };
+    response: { text: string; usedPrettier: boolean; editorConfig: EditorConfigSettings };
+  };
+  'rules:apply-pack': {
+    request: { projectId: number; packId: string };
+    response: { created: number };
+  };
+  'system:save-export': {
+    request: { defaultFileName: string; contents: string; encoding: 'utf8' | 'base64' };
+    response: { filePath: string; cancelled: boolean };
+  };
 }
 
 export type IpcChannel = keyof IpcContract;
@@ -206,6 +263,20 @@ export const IPC_CHANNELS = [
   'inventory:list',
   'source:read',
   'source:save',
+  'search:text',
+  'analysis:preview',
+  'analysis:diff-impact',
+  'analysis:folder-metrics',
+  'git:changed-files',
+  'git:diff',
+  'git:blame',
+  'git:churn',
+  'git:cochange',
+  'git:renames',
+  'git:mergetool',
+  'source:format',
+  'rules:apply-pack',
+  'system:save-export',
 ] as const satisfies readonly IpcChannel[];
 
 /** Main -> renderer push events. These are one-way and carry no privileged handles. */

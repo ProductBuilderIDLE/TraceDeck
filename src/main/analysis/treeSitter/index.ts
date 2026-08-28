@@ -1,6 +1,7 @@
 import { extname } from 'node:path';
 import type { Node } from 'web-tree-sitter';
 import type { ParsedFile } from '../parser';
+import { blankOutside, markupTagRegions } from '../parser';
 import {
   extractCssReferences,
   extractGoReferences,
@@ -14,6 +15,9 @@ const LANGUAGE_BY_EXTENSION: Record<string, TreeSitterLanguageId> = {
   '.html': 'html',
   '.htm': 'html',
   '.css': 'css',
+  '.scss': 'css',
+  '.sass': 'css',
+  '.less': 'css',
   '.py': 'python',
   '.go': 'go',
   '.rs': 'rust',
@@ -24,6 +28,27 @@ export const TREE_SITTER_EXTENSIONS: readonly string[] = Object.keys(LANGUAGE_BY
 
 export function treeSitterLanguageFor(relativePath: string): TreeSitterLanguageId | null {
   return LANGUAGE_BY_EXTENSION[extname(relativePath).toLowerCase()] ?? null;
+}
+
+function syntaxIssuesFrom(root: Node): ParsedFile['syntaxIssues'] {
+  const issues: ParsedFile['syntaxIssues'] = [];
+  const stack: Node[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    if (node.type === 'ERROR') {
+      issues.push({
+        line: node.startPosition.row + 1,
+        column: node.startPosition.column + 1,
+        message: 'Syntax error',
+      });
+    }
+    for (let index = 0; index < node.namedChildCount; index += 1) {
+      const child = node.namedChild(index);
+      if (child) stack.push(child);
+    }
+  }
+  return issues;
 }
 
 function referencesFor(language: TreeSitterLanguageId, root: Node, relativePath: string) {
@@ -61,7 +86,9 @@ export async function parseWithTreeSitter(
     return {
       imports: [],
       symbols: [],
+      calls: [],
       parseErrors: [],
+      syntaxIssues: [],
       limitations: [
         `${relativePath}: the ${language} grammar could not be loaded${
           reason ? ` (${reason})` : ''
@@ -75,21 +102,22 @@ export async function parseWithTreeSitter(
     return {
       imports: [],
       symbols: [],
+      calls: [],
       parseErrors: [`${relativePath} could not be parsed.`],
+      syntaxIssues: [
+        { line: 1, column: 1, message: `${relativePath} could not be parsed.` },
+      ],
       limitations: [],
     };
   }
 
   try {
     const references = referencesFor(language, tree.rootNode, relativePath);
+    const syntaxIssues = syntaxIssuesFrom(tree.rootNode);
 
     const limitations: string[] = [];
-    // Malformed markup still yields a usable tree, so references are kept and the
-    // uncertainty is reported rather than the file being silently dropped.
-    if (tree.rootNode.hasError) {
-      limitations.push(
-        `${relativePath}: the parser recovered from a syntax error, so some references may be missing.`,
-      );
+    if (tree.rootNode.hasError && syntaxIssues.length === 0) {
+      syntaxIssues.push({ line: 1, column: 1, message: 'Syntax error' });
     }
 
     return {
@@ -103,10 +131,91 @@ export async function parseWithTreeSitter(
         isDynamicExpression: false,
       })),
       symbols: [],
+      calls: [],
       parseErrors: [],
+      syntaxIssues,
       limitations,
     };
   } finally {
     tree.delete();
   }
+}
+
+export async function parseTreeSitterLanguage(
+  language: TreeSitterLanguageId,
+  relativePath: string,
+  text: string,
+): Promise<ParsedFile> {
+  const parser = await getParser(language);
+  if (!parser) {
+    const reason = grammarFailure(language);
+    return {
+      imports: [],
+      symbols: [],
+      calls: [],
+      parseErrors: [],
+      syntaxIssues: [],
+      limitations: [
+        `${relativePath}: the ${language} grammar could not be loaded${
+          reason ? ` (${reason})` : ''
+        }.`,
+      ],
+    };
+  }
+
+  const tree = parser.parse(text);
+  if (!tree) {
+    return {
+      imports: [],
+      symbols: [],
+      calls: [],
+      parseErrors: [],
+      syntaxIssues: [],
+      limitations: [`${relativePath}: ${language} region could not be parsed.`],
+    };
+  }
+
+  try {
+    const references = referencesFor(language, tree.rootNode, relativePath);
+    return {
+      imports: references.map((reference) => ({
+        specifier: reference.specifier,
+        line: reference.line,
+        kind: 'import' as const,
+        isTypeOnly: false,
+        importedNames: [],
+        isStarExport: false,
+        isDynamicExpression: false,
+      })),
+      symbols: [],
+      calls: [],
+      parseErrors: [],
+      syntaxIssues: syntaxIssuesFrom(tree.rootNode),
+      limitations: [],
+    };
+  } finally {
+    tree.delete();
+  }
+}
+
+/**
+ * Analyses Vue/Svelte/Astro template and style regions with the HTML and CSS grammars.
+ * Line numbers stay aligned with the original file because non-region text is blanked.
+ */
+export async function parseContainerMarkup(
+  relativePath: string,
+  text: string,
+): Promise<ParsedFile> {
+  const template = blankOutside(text, markupTagRegions(text, 'template'));
+  const style = blankOutside(text, markupTagRegions(text, 'style'));
+  const html = await parseTreeSitterLanguage('html', relativePath, template);
+  const css = await parseTreeSitterLanguage('css', relativePath, style);
+  return {
+    imports: [...html.imports, ...css.imports],
+    symbols: [],
+    calls: [],
+    parseErrors: [...html.parseErrors, ...css.parseErrors],
+    syntaxIssues: [...html.syntaxIssues, ...css.syntaxIssues],
+    limitations: [...html.limitations, ...css.limitations],
+  };
 }

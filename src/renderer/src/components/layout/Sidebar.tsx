@@ -15,6 +15,10 @@ import {
   TriangleAlert,
   FileWarning,
   GitMerge,
+  ListTodo,
+  Copy,
+  Gauge,
+  BarChart3,
   Square,
   Unlink,
 } from 'lucide-react';
@@ -240,6 +244,29 @@ export function Sidebar(): JSX.Element {
       label: 'Merge conflicts',
       icon: GitMerge,
       count: stats?.mergeConflictCount,
+    },
+    {
+      id: 'todos',
+      label: 'TODO comments',
+      icon: ListTodo,
+      count: stats?.todoCommentCount,
+    },
+    {
+      id: 'duplicates',
+      label: 'Duplicate code',
+      icon: Copy,
+      count: stats?.duplicateCodeCount,
+    },
+    {
+      id: 'complexity',
+      label: 'Complexity',
+      icon: Gauge,
+      count: stats?.complexityHotspotCount,
+    },
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      icon: BarChart3,
     },
   ];
 

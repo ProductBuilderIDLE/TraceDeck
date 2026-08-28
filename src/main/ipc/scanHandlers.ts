@@ -3,6 +3,7 @@ import { SCAN_PROGRESS_EVENT } from '@shared/ipc';
 import type { ScanProgress } from '@shared/types';
 import type { DataStore } from '../db';
 import { runScan, ScanCancelledError } from '../analysis/scanner';
+import { watchProject } from '../services/watchService';
 import { asObject, requireBoolean, requireInt } from '../utils/validation';
 import { HandledError, type HandlerMap } from './registry';
 
@@ -21,43 +22,59 @@ function broadcastProgress(progress: ScanProgress): void {
   }
 }
 
+async function runProjectScan(
+  store: DataStore,
+  projectId: number,
+  fullRescan: boolean,
+): Promise<{ scanId: number }> {
+  if (running.has(projectId)) {
+    throw new HandledError('A scan is already running for this project.', 'SCAN_IN_PROGRESS');
+  }
+
+  const project = store.projects.findById(projectId);
+  if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
+
+  const signal = { cancelled: false };
+  const pending: RunningScan = { scanId: -1, signal };
+  running.set(projectId, pending);
+
+  try {
+    const scan = await runScan(store, {
+      project,
+      fullRescan,
+      signal,
+      onProgress: (progress) => {
+        broadcastProgress({ ...progress, scanId: pending.scanId });
+      },
+    });
+    pending.scanId = scan.id;
+    return { scanId: scan.id };
+  } catch (error) {
+    if (error instanceof ScanCancelledError) {
+      throw new HandledError('Scan cancelled.', 'SCAN_CANCELLED');
+    }
+    throw error;
+  } finally {
+    running.delete(projectId);
+  }
+}
+
+export function startWatchingForProject(store: DataStore, projectId: number): void {
+  const project = store.projects.findById(projectId);
+  if (!project) return;
+  watchProject(projectId, project.rootPath, () => {
+    void runProjectScan(store, projectId, false).catch(() => undefined);
+  });
+}
+
 export function scanHandlers(store: DataStore): HandlerMap {
   return {
     'scan:start': async (payload) => {
       const value = asObject(payload);
       const projectId = requireInt(value['projectId'], 'projectId', 1);
       const fullRescan = requireBoolean(value['fullRescan'], 'fullRescan');
-
-      if (running.has(projectId)) {
-        throw new HandledError('A scan is already running for this project.', 'SCAN_IN_PROGRESS');
-      }
-
-      const project = store.projects.findById(projectId);
-      if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
-
-      const signal = { cancelled: false };
-      const pending: RunningScan = { scanId: -1, signal };
-      running.set(projectId, pending);
-
-      try {
-        const scan = await runScan(store, {
-          project,
-          fullRescan,
-          signal,
-          onProgress: (progress) => {
-            broadcastProgress({ ...progress, scanId: pending.scanId });
-          },
-        });
-        pending.scanId = scan.id;
-        return { scanId: scan.id };
-      } catch (error) {
-        if (error instanceof ScanCancelledError) {
-          throw new HandledError('Scan cancelled.', 'SCAN_CANCELLED');
-        }
-        throw error;
-      } finally {
-        running.delete(projectId);
-      }
+      startWatchingForProject(store, projectId);
+      return runProjectScan(store, projectId, fullRescan);
     },
 
     'scan:cancel': async (payload) => {

@@ -15,6 +15,10 @@ const VIEW_TITLES: Record<ViewId, string> = {
   'type-errors': 'Type errors',
   'syntax-errors': 'Syntax errors',
   'merge-conflicts': 'Merge conflicts',
+  todos: 'TODO comments',
+  duplicates: 'Duplicate code',
+  complexity: 'Complexity hotspots',
+  metrics: 'Metrics',
   reports: 'Reports',
   settings: 'Settings',
 };
@@ -30,6 +34,10 @@ const CODE_CAPABLE: ReadonlySet<ViewId> = new Set<ViewId>([
   'type-errors',
   'syntax-errors',
   'merge-conflicts',
+  'todos',
+  'duplicates',
+  'complexity',
+  'metrics',
 ]);
 
 export function MainPanel({ children }: { children: React.ReactNode }): JSX.Element {

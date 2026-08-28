@@ -1,43 +1,56 @@
 // Domain model shared by the main process, the preload bridge, and the renderer.
 // Everything here must be structured-clone friendly: no class instances, no functions.
 
-export type SymbolKind =
-  | 'function'
-  | 'class'
-  | 'interface'
-  | 'type'
-  | 'enum'
-  | 'variable'
-  | 'react-component'
-  | 'unknown';
-
 export type NodeType = 'file' | 'symbol' | 'folder';
 
 /**
  * Every edge kind the analyser actually produces.
  *
  * `reference` is import-level: "this file imports this name, which is declared there",
- * resolved through barrel files. It is deliberately not a call graph — nothing here records
- * that one function calls another.
+ * resolved through barrel files. `call` is a conservative local/imported identifier call,
+ * not a complete call graph.
  */
-export type EdgeType =
-  | 'import'
-  | 'export'
-  | 're-export'
-  | 'dynamic-import'
-  | 'require'
-  | 'reference';
+export const ALL_EDGE_TYPES = [
+  'import',
+  'export',
+  're-export',
+  'dynamic-import',
+  'require',
+  'reference',
+  'call',
+] as const;
+
+export type EdgeType = (typeof ALL_EDGE_TYPES)[number];
 
 export type ScanStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
-export type FindingType =
-  | 'circular-dependency'
-  | 'unused-export-candidate'
-  | 'architecture-violation'
-  | 'unresolved-import'
-  | 'type-error'
-  | 'syntax-error'
-  | 'merge-conflict';
+export const ALL_FINDING_TYPES = [
+  'circular-dependency',
+  'unused-export-candidate',
+  'architecture-violation',
+  'unresolved-import',
+  'type-error',
+  'syntax-error',
+  'merge-conflict',
+  'todo-comment',
+  'duplicate-code',
+  'complexity-hotspot',
+] as const;
+
+export type FindingType = (typeof ALL_FINDING_TYPES)[number];
+
+export const ALL_SYMBOL_KINDS = [
+  'function',
+  'class',
+  'interface',
+  'type',
+  'enum',
+  'variable',
+  'react-component',
+  'unknown',
+] as const;
+
+export type SymbolKind = (typeof ALL_SYMBOL_KINDS)[number];
 
 export type Severity = 'info' | 'low' | 'medium' | 'high';
 
@@ -170,6 +183,8 @@ export interface SourceTextDocument {
   text: string;
   /** False when the file is viewable but must not be written back. */
   editable: boolean;
+  /** Indentation from the nearest EditorConfig, when one exists. */
+  editorConfig?: EditorConfigSettings;
 }
 
 export interface SourceUnavailableDocument {
@@ -269,6 +284,12 @@ export interface SymbolMetadata {
   isTypeOnly?: boolean;
   isAsync?: boolean;
   paramCount?: number;
+  /** Cyclomatic complexity of a function or method body (decision points + 1). */
+  complexity?: number;
+  /** Deepest nesting of control-flow constructs inside the body. */
+  nestingDepth?: number;
+  /** Simplified LCOM for a class: 0 is cohesive, 1 means methods share no fields. */
+  lcom?: number;
 }
 
 export interface GraphEdge {
@@ -300,6 +321,8 @@ export interface EdgeMetadata {
    * Persisted so an incremental rescan reproduces the same finding without re-parsing.
    */
   dynamicExpression?: boolean;
+  /** Callee identifier recorded on conservative `call` edges. */
+  callee?: string;
 }
 
 export interface Finding {
@@ -312,6 +335,7 @@ export interface Finding {
   description: string;
   relatedNodeIds: string[];
   details: FindingDetails;
+  fingerprint: string;
   createdAt: string;
   dismissedAt: string | null;
 }
@@ -344,7 +368,34 @@ export type FindingDetails =
   | TypeErrorDetails
   | SyntaxErrorDetails
   | MergeConflictDetails
+  | TodoCommentDetails
+  | DuplicateCodeDetails
+  | ComplexityHotspotDetails
   | Record<string, never>;
+
+export interface TodoCommentDetails {
+  kind: 'todo-comment';
+  filePath: string;
+  line: number;
+  tag: 'TODO' | 'FIXME' | 'HACK';
+  text: string;
+}
+
+export interface DuplicateCodeDetails {
+  kind: 'duplicate-code';
+  filePaths: string[];
+  startLines: number[];
+  lineCount: number;
+}
+
+export interface ComplexityHotspotDetails {
+  kind: 'complexity-hotspot';
+  filePath: string;
+  symbolName: string;
+  line: number;
+  complexity: number;
+  nestingDepth: number;
+}
 
 export interface TypeErrorDetails {
   kind: 'type-error';
@@ -451,7 +502,8 @@ export type ReportSection =
   | 'type-errors'
   | 'top-impact-files'
   | 'blast-radius'
-  | 'limitations';
+  | 'limitations'
+  | 'changed-since-scan';
 
 // --- Analysis results (computed, not persisted verbatim) ---
 
@@ -474,6 +526,7 @@ export interface GraphPayload {
     target: string;
     edgeType: EdgeType;
     unresolved: boolean;
+    typeOnly: boolean;
   }>;
   truncated: boolean;
   totalNodeCount: number;
@@ -515,6 +568,8 @@ export interface RiskScore {
   nodeId: string;
   path: string;
   score: number;
+  /** 0–100 rank inside this repository: 100 means this file is among the highest-scoring. */
+  percentile: number;
   factors: RiskScoreFactor[];
   formulaDescription: string;
 }
@@ -538,7 +593,28 @@ export interface DashboardStats {
   typeErrorCount: number;
   syntaxErrorCount: number;
   mergeConflictCount: number;
+  todoCommentCount: number;
+  duplicateCodeCount: number;
+  complexityHotspotCount: number;
   topImpactFiles: RiskScore[];
+  licenses: LicenseEntry[];
+  publicApi: string[];
+  scanComparison: ScanComparison | null;
+}
+
+export interface LicenseEntry {
+  packageName: string;
+  version: string | null;
+  license: string | null;
+}
+
+export interface ScanComparison {
+  previousScanId: number | null;
+  added: number;
+  removed: number;
+  persisted: number;
+  addedTitles: string[];
+  removedTitles: string[];
 }
 
 export interface SearchResult {
@@ -558,6 +634,107 @@ export interface FileDetail {
   directDependents: BlastRadiusEntry[];
   riskScore: RiskScore;
   inCycle: boolean;
+  fanIn: number;
+  fanOut: number;
+  testDependents: BlastRadiusEntry[];
+  entryPointsCovering: string[];
+  owners: string[];
+  maxComplexity: number | null;
+  maxLcom: number | null;
+}
+
+export interface DiffImpactResult {
+  changedPaths: string[];
+  affectedPaths: string[];
+  testPaths: string[];
+  entryPoints: string[];
+  cyclesTouched: string[][];
+  truncated: boolean;
+}
+
+export interface FolderMetrics {
+  folder: string;
+  fileCount: number;
+  afferent: number;
+  efferent: number;
+  instability: number;
+  abstractness: number;
+}
+
+export interface FileOutlier {
+  relativePath: string;
+  sizeBytes: number;
+  symbolCount: number;
+  fanIn: number;
+  fanOut: number;
+}
+
+export interface ProjectMetrics {
+  folders: FolderMetrics[];
+  outliers: FileOutlier[];
+}
+
+export interface PreviewFinding {
+  findingType: FindingType;
+  severity: Severity;
+  title: string;
+  line: number | null;
+  message: string;
+}
+
+export interface TextSearchHit {
+  relativePath: string;
+  line: number;
+  column: number;
+  preview: string;
+}
+
+export interface BlameLine {
+  line: number;
+  commit: string;
+  author: string;
+  date: string;
+}
+
+export interface GitDiffFile {
+  relativePath: string;
+  status: string;
+}
+
+export interface ChurnEntry {
+  relativePath: string;
+  commits: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface CoChangeEntry {
+  relativePath: string;
+  sharedCommits: number;
+}
+
+export interface RenameEntry {
+  from: string;
+  to: string;
+  commit: string;
+}
+
+export interface ArchitecturePack {
+  id: string;
+  name: string;
+  description: string;
+  rules: Array<{
+    name: string;
+    sourcePattern: string;
+    targetPattern: string;
+    severity: Severity;
+  }>;
+}
+
+export interface EditorConfigSettings {
+  indentStyle: 'space' | 'tab';
+  indentSize: number;
+  endOfLine: 'lf' | 'crlf';
 }
 
 export interface ScanProgress {

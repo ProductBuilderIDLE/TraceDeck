@@ -41,6 +41,7 @@ describe('schema migrations', () => {
       'project_files',
       'projects',
       'saved_reports',
+      'scan_snapshots',
       'scans',
       'symbols',
     ]);

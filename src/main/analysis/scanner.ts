@@ -1,18 +1,13 @@
 import { promises as fs } from 'node:fs';
 
-import type {
-  FindingType,
-  TypeCheckSummary,
-  Project,
-  Scan,
-  ScanProgress,
-  ScanSummary,
-  SymbolKind,
-} from '@shared/types';
+import { ALL_FINDING_TYPES, type FindingType, type TypeCheckSummary, type Project, type Scan, type ScanProgress, type ScanSummary, type SymbolKind } from '@shared/types';
 import { MAX_SOURCE_BYTES } from '@shared/constants';
 import { fileNodeId } from '@shared/nodeIds';
 import { DEPENDENCY_EDGE_TYPES, GraphIndex } from './algorithms/graphIndex';
 import { detectCycles } from './algorithms/cycles';
+import { COMPLEXITY_HOTSPOT_THRESHOLD } from './algorithms/complexity';
+import { findDuplicateBlocks } from './algorithms/clones';
+import { findTodoComments } from './algorithms/todos';
 import { evaluateArchitectureRules, type ImportFact } from './algorithms/architectureRules';
 import {
   findUnusedExportCandidates,
@@ -20,6 +15,7 @@ import {
   type ExportedSymbolInput,
 } from './algorithms/unusedExports';
 import { buildGraph, type FileToBuild } from './graph';
+import { isGitRepo, gitRecentRenames } from '../services/gitService';
 import {
   discoverFiles,
   type DiscoveredFile,
@@ -32,12 +28,15 @@ import {
   sourceContainerLimitations,
   type ParsedFile,
   type ParsedImport,
+  type ParsedCall,
+  type SyntaxIssue,
 } from './parser';
 import { buildKnownFileIndex, type ResolverContext } from './resolver';
 import { packageNameOf, readProjectManifests } from './packageManifest';
 import { runTypeScriptDiagnostics } from './diagnostics';
 import { diagnoseJson, findMergeConflicts, isJsonPath } from './textDiagnostics';
-import { parseWithTreeSitter } from './treeSitter';
+import { parseContainerMarkup, parseWithTreeSitter } from './treeSitter';
+import { readLanguageRoots, rewriteLanguageImports } from './languageRoots';
 import { decodeText, detectEncoding, isDecodableText } from '../services/fileClassificationService';
 import { discoverProjectTsConfigs, loadProjectTsConfig } from './tsconfig';
 import type { DataStore } from '../db';
@@ -65,15 +64,7 @@ export class ScanCancelledError extends Error {
   }
 }
 
-const ANALYSED_FINDING_TYPES: FindingType[] = [
-  'circular-dependency',
-  'unused-export-candidate',
-  'architecture-violation',
-  'unresolved-import',
-  'type-error',
-  'syntax-error',
-  'merge-conflict',
-];
+const ANALYSED_FINDING_TYPES: FindingType[] = [...ALL_FINDING_TYPES];
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : pluralForm}`;
@@ -210,6 +201,7 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
   }));
 
   const imports: ParsedImport[] = [];
+  const calls: ParsedCall[] = [];
   for (const edge of store.db
     .prepare<[number], { edge_type: string; source_line: number | null; metadata_json: string }>(
       `SELECT edge_type, source_line, metadata_json FROM graph_edges WHERE source_file_id = ?`,
@@ -223,7 +215,14 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
       isStarExport?: boolean;
       isTypeOnly?: boolean;
       dynamicExpression?: boolean;
+      callee?: string;
     };
+
+    if (edge.edge_type === 'call') {
+      if (metadata.callee) calls.push({ callee: metadata.callee, line: edge.source_line ?? 1 });
+      continue;
+    }
+
     if (!metadata.specifier) continue;
 
     imports.push({
@@ -244,7 +243,7 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
     });
   }
 
-  return { imports, symbols, parseErrors: [], limitations: [] };
+  return { imports, symbols, calls, parseErrors: [], syntaxIssues: [], limitations: [] };
 }
 
 /** Files with no resolved dependents are the best available guess at an entry point. */
@@ -365,6 +364,22 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
     }
 
     const manifests = await readProjectManifests(project.rootPath);
+    const languageRoots = await readLanguageRoots(project.rootPath);
+    const renamedPaths = new Set<string>();
+    try {
+      if (await isGitRepo(project.rootPath)) {
+        for (const entry of await gitRecentRenames(project.rootPath)) {
+          if (entry.from) renamedPaths.add(entry.from);
+          if (entry.to) renamedPaths.add(entry.to);
+        }
+      }
+    } catch {
+      // Git is optional; unused-export caveats simply stay quieter.
+    }
+    const previousFindings = store.findings.list(project.id, { includeDismissed: true });
+    const previousInventory = new Map(
+      store.projectFiles.listByProject(project.id).map((entry) => [entry.relativePath, entry]),
+    );
 
     // --- Decide which files actually need parsing ---
     const storedFingerprints = store.files.fingerprints(project.id);
@@ -454,6 +469,7 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
 
     const toBuild: FileToBuild[] = [];
     let errorCount = 0;
+    const collectedSyntax: Array<{ relativePath: string; issue: SyntaxIssue }> = [];
 
     for (const [position, file] of changed.entries()) {
       checkCancelled();
@@ -463,9 +479,25 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
         const parsed =
           (await parseWithTreeSitter(file.relativePath, source)) ??
           parseSourceFile(file.absolutePath, source);
+        if (/\.(vue|svelte|astro)$/i.test(file.relativePath)) {
+          const extra = await parseContainerMarkup(file.relativePath, source);
+          parsed.imports.push(...extra.imports);
+          parsed.syntaxIssues.push(...extra.syntaxIssues);
+          parsed.parseErrors.push(...extra.parseErrors);
+          parsed.limitations.push(...extra.limitations);
+        }
+        rewriteLanguageImports(file.relativePath, parsed.imports, languageRoots);
         if (parsed.parseErrors.length > 0) {
           errorCount += parsed.parseErrors.length;
           limitations.push(...parsed.parseErrors.map((e) => `${file.relativePath}: ${e}`));
+        }
+        for (const issue of parsed.syntaxIssues) {
+          if (issue.line >= 1) {
+            errorCount += 1;
+            collectedSyntax.push({ relativePath: file.relativePath, issue });
+          } else {
+            limitations.push(`${file.relativePath}: ${issue.message}`);
+          }
         }
         for (const limitation of parsed.limitations) {
           const text = limitation.includes(file.relativePath)
@@ -623,6 +655,7 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       exclusions: project.configuration.unusedExportExclusions,
       barrelCaveats: graph.barrelCaveats,
       packageEntryPoints: packageEntries,
+      renamedPaths,
     });
 
     const importFacts: ImportFact[] = [];
@@ -837,6 +870,30 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       });
     }
 
+    for (const { relativePath, issue } of collectedSyntax) {
+      findings.push({
+        projectId: project.id,
+        scanId: scan.id,
+        findingType: 'syntax-error',
+        severity: 'high',
+        title: `Syntax error in ${relativePath}`,
+        description: `${issue.message} (line ${issue.line}, column ${issue.column})`,
+        relatedNodeIds: [fileNodeId(relativePath)],
+        details: {
+          kind: 'syntax-error',
+          filePath: relativePath,
+          line: issue.line,
+          column: issue.column,
+          code: 0,
+          message: issue.message,
+        },
+        fingerprint: fingerprint('syntax-error', relativePath, issue.message),
+      });
+    }
+
+    const cloneInputs: Array<{ relativePath: string; text: string }> = [];
+    const changedPathSet = new Set(changed.map((file) => file.relativePath));
+
     // --- Syntax and merge-conflict findings over decodable inventory text ---
     //
     // This runs over the inventory rather than the graph subset, so a broken JSON config or a
@@ -846,6 +903,39 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       if (entry.contentKind !== 'text' || entry.entryKind !== 'regular') continue;
       if (entry.sizeBytes > MAX_SOURCE_BYTES) continue;
 
+      const previous = previousInventory.get(entry.relativePath);
+      const hashUnchanged =
+        !fullRescan &&
+        previous?.contentHash != null &&
+        entry.contentHash != null &&
+        previous.contentHash === entry.contentHash;
+
+      if (hashUnchanged) {
+        for (const finding of previousFindings) {
+          if (
+            finding.findingType !== 'merge-conflict' &&
+            finding.findingType !== 'todo-comment' &&
+            finding.findingType !== 'syntax-error'
+          ) {
+            continue;
+          }
+          const details = finding.details as { filePath?: string };
+          if (details.filePath !== entry.relativePath) continue;
+          findings.push({
+            projectId: project.id,
+            scanId: scan.id,
+            findingType: finding.findingType,
+            severity: finding.severity,
+            title: finding.title,
+            description: finding.description,
+            relatedNodeIds: finding.relatedNodeIds,
+            details: finding.details,
+            fingerprint: finding.fingerprint,
+          });
+        }
+        continue;
+      }
+
       let text: string;
       try {
         const bytes = await fs.readFile(entry.absolutePath);
@@ -854,6 +944,28 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
         text = decodeText(bytes, encoding);
       } catch {
         continue;
+      }
+
+      cloneInputs.push({ relativePath: entry.relativePath, text });
+
+      for (const todo of findTodoComments(text)) {
+        findings.push({
+          projectId: project.id,
+          scanId: scan.id,
+          findingType: 'todo-comment',
+          severity: todo.tag === 'FIXME' ? 'medium' : 'info',
+          title: `${todo.tag} in ${entry.relativePath}`,
+          description: todo.text.length > 0 ? todo.text : `A ${todo.tag} comment is present.`,
+          relatedNodeIds: [fileNodeId(entry.relativePath)],
+          details: {
+            kind: 'todo-comment',
+            filePath: entry.relativePath,
+            line: todo.line,
+            tag: todo.tag,
+            text: todo.text,
+          },
+          fingerprint: fingerprint('todo', entry.relativePath, todo.tag, todo.line, todo.text),
+        });
       }
 
       for (const conflict of findMergeConflicts(text)) {
@@ -909,7 +1021,81 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       }
     }
 
+    for (const file of toBuild) {
+      for (const symbol of file.parsed.symbols) {
+        const complexity = symbol.metadata.complexity ?? 0;
+        if (complexity < COMPLEXITY_HOTSPOT_THRESHOLD) continue;
+        findings.push({
+          projectId: project.id,
+          scanId: scan.id,
+          findingType: 'complexity-hotspot',
+          severity: complexity >= 20 ? 'high' : 'medium',
+          title: `High complexity: ${symbol.name}`,
+          description:
+            `${symbol.name} in ${file.relativePath} has cyclomatic complexity ${complexity} ` +
+            `(nesting depth ${symbol.metadata.nestingDepth ?? 0}).`,
+          relatedNodeIds: [fileNodeId(file.relativePath)],
+          details: {
+            kind: 'complexity-hotspot',
+            filePath: file.relativePath,
+            symbolName: symbol.name,
+            line: symbol.startLine,
+            complexity,
+            nestingDepth: symbol.metadata.nestingDepth ?? 0,
+          },
+          fingerprint: fingerprint('complexity', file.relativePath, symbol.name),
+        });
+      }
+    }
+
+    for (const group of findDuplicateBlocks(cloneInputs)) {
+      findings.push({
+        projectId: project.id,
+        scanId: scan.id,
+        findingType: 'duplicate-code',
+        severity: 'low',
+        title: `Duplicated block (${group.lineCount} lines) in ${group.filePaths.length} places`,
+        description: group.filePaths
+          .map((path, index) => `${path}:${group.startLines[index] ?? 1}`)
+          .join(', '),
+        relatedNodeIds: [...new Set(group.filePaths)].map((path) => fileNodeId(path)),
+        details: {
+          kind: 'duplicate-code',
+          filePaths: group.filePaths,
+          startLines: group.startLines,
+          lineCount: group.lineCount,
+        },
+        fingerprint: fingerprint('duplicate', group.hash),
+      });
+    }
+
+    if (!fullRescan) {
+      for (const finding of previousFindings) {
+        if (finding.findingType !== 'duplicate-code') continue;
+        const details = finding.details;
+        if (details.kind !== 'duplicate-code') continue;
+        if (details.filePaths.some((path) => changedPathSet.has(path))) continue;
+        findings.push({
+          projectId: project.id,
+          scanId: scan.id,
+          findingType: finding.findingType,
+          severity: finding.severity,
+          title: finding.title,
+          description: finding.description,
+          relatedNodeIds: finding.relatedNodeIds,
+          details: finding.details,
+          fingerprint: finding.fingerprint,
+        });
+      }
+    }
+
     store.findings.replaceForScan(project.id, scan.id, ANALYSED_FINDING_TYPES, findings);
+    store.snapshots.insert(
+      project.id,
+      scan.id,
+      findings.map((finding) => ({ fingerprint: finding.fingerprint, title: finding.title })),
+    );
+    store.snapshots.prune(project.id, 5);
 
     // --- Complete ---
     checkCancelled();

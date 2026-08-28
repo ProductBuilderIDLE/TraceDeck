@@ -1,4 +1,4 @@
-import type { EdgeType, FindingType, NodeType } from '@shared/types';
+import { ALL_EDGE_TYPES, ALL_FINDING_TYPES, ALL_SYMBOL_KINDS, type EdgeType, type FindingType, type NodeType } from '@shared/types';
 import { DEFAULT_MAX_TRAVERSAL_DEPTH, MAX_TRAVERSAL_DEPTH } from '@shared/constants';
 import { parseNodeId } from '@shared/nodeIds';
 import type { DataStore } from '../db';
@@ -18,23 +18,8 @@ import {
 import { HandledError, type HandlerMap } from './registry';
 
 const NODE_TYPES: readonly NodeType[] = ['file', 'symbol', 'folder'];
-const EDGE_TYPES: readonly EdgeType[] = [
-  'import',
-  'export',
-  're-export',
-  'dynamic-import',
-  'require',
-  'reference',
-];
-const FINDING_TYPES: readonly FindingType[] = [
-  'circular-dependency',
-  'unused-export-candidate',
-  'architecture-violation',
-  'unresolved-import',
-  'type-error',
-  'syntax-error',
-  'merge-conflict',
-];
+const EDGE_TYPES: readonly EdgeType[] = ALL_EDGE_TYPES;
+const FINDING_TYPES: readonly FindingType[] = ALL_FINDING_TYPES;
 
 /** Rejects node ids that are not one of the three shapes the graph uses. */
 function requireNodeId(value: unknown, field: string): string {
@@ -125,6 +110,8 @@ export function analysisHandlers(store: DataStore, analysis: AnalysisService): H
         query: requireNonEmptyString(value['query'], 'query', 256),
         types: optionalEnumArray(value['types'], 'types', NODE_TYPES),
         limit: optionalInt(value['limit'], 'limit', 1),
+        exportedOnly: optionalBoolean(value['exportedOnly'], 'exportedOnly'),
+        kinds: optionalEnumArray(value['kinds'], 'kinds', ALL_SYMBOL_KINDS),
       });
     },
 

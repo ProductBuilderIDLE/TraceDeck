@@ -7,6 +7,7 @@ import { ProjectRepository } from './repositories/projectRepository';
 import { ReportRepository } from './repositories/reportRepository';
 import { RuleRepository } from './repositories/ruleRepository';
 import { ScanRepository } from './repositories/scanRepository';
+import { SnapshotRepository } from './repositories/snapshotRepository';
 import { SymbolRepository } from './repositories/symbolRepository';
 
 /** One handle carrying the connection and every repository bound to it. */
@@ -20,6 +21,7 @@ export class DataStore {
   readonly findings: FindingRepository;
   readonly rules: RuleRepository;
   readonly reports: ReportRepository;
+  readonly snapshots: SnapshotRepository;
 
   constructor(readonly db: Db) {
     this.projects = new ProjectRepository(db);
@@ -31,6 +33,7 @@ export class DataStore {
     this.findings = new FindingRepository(db);
     this.rules = new RuleRepository(db);
     this.reports = new ReportRepository(db);
+    this.snapshots = new SnapshotRepository(db);
   }
 
   /** Runs the callback inside a single transaction; nested calls reuse the outer one. */

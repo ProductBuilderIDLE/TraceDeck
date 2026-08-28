@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { PRIVACY_NOTICE } from '@shared/constants';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
+import { invoke } from '../../lib/ipc';
 import { Button, Caveat, Card, EmptyState, PathLabel, RiskBadge, StatTile } from '../common/ui';
 
 function PrivacyBanner(): JSX.Element {
@@ -17,6 +19,41 @@ function PrivacyBanner(): JSX.Element {
       </div>
     </div>
   );
+}
+
+function ChangedImpact({ projectId }: { projectId: number }): JSX.Element | null {
+  const [summary, setSummary] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke('git:changed-files', { projectId })
+      .then(async (files) => {
+        if (cancelled || files.length === 0) {
+          if (!cancelled) setSummary(null);
+          return;
+        }
+        const impact = await invoke('analysis:diff-impact', {
+          projectId,
+          changedPaths: files.map((file) => file.relativePath),
+        });
+        if (!cancelled) {
+          setSummary(
+            `${files.length} file(s) differ from HEAD; ${impact.affectedPaths.length} file(s) could be affected` +
+              (impact.testPaths.length > 0 ? `, including ${impact.testPaths.length} test file(s)` : '') +
+              '.',
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  if (!summary) return null;
+  return <Card title="Working tree impact">{summary}</Card>;
 }
 
 function LimitationsCard({ limitations }: { limitations: readonly string[] }): JSX.Element | null {
@@ -111,6 +148,7 @@ export function Dashboard(): JSX.Element {
   return (
     <div className="space-y-4 p-5">
       <PrivacyBanner />
+      <ChangedImpact projectId={project.id} />
 
       <div>
         <h2 className="text-[15px] font-semibold text-ink">{project.name}</h2>
@@ -120,6 +158,11 @@ export function Dashboard(): JSX.Element {
           {lastScan.completedAt ? new Date(lastScan.completedAt).toLocaleString() : 'never'}
           {summary && ` · ${summary.parsedFiles} file(s) parsed, ${summary.skippedUnchangedFiles} unchanged`}
           {summary && ` · ${(summary.durationMs / 1000).toFixed(1)}s`}
+        </p>
+        <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-ink-faint">
+          Scan re-parses files whose content hash changed and copies findings for the rest. Use
+          Full only when hashes look wrong. Type checking still uses the project tsbuildinfo cache
+          when enabled.
         </p>
       </div>
 
@@ -161,7 +204,68 @@ export function Dashboard(): JSX.Element {
           onClick={() => setActiveView('type-errors')}
         />
         <StatTile label="External packages" value={summary?.externalDependencies ?? 0} />
+        <StatTile
+          label="TODO comments"
+          value={stats.todoCommentCount}
+          onClick={() => setActiveView('todos')}
+        />
+        <StatTile
+          label="Duplicate blocks"
+          value={stats.duplicateCodeCount}
+          onClick={() => setActiveView('duplicates')}
+        />
+        <StatTile
+          label="Complexity hotspots"
+          value={stats.complexityHotspotCount}
+          onClick={() => setActiveView('complexity')}
+        />
       </div>
+
+      {stats.scanComparison && (
+        <Card title="Compared with previous scan">
+          <p className="text-[11px] text-ink-muted">
+            {stats.scanComparison.added} new · {stats.scanComparison.removed} gone ·{' '}
+            {stats.scanComparison.persisted} unchanged
+          </p>
+          {stats.scanComparison.addedTitles.length > 0 && (
+            <ul className="mt-2 space-y-0.5">
+              {stats.scanComparison.addedTitles.map((title) => (
+                <li key={title} className="text-[11px] text-ink-muted">
+                  + {title}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {stats.publicApi.length > 0 && (
+        <Card title="Public API (package.json exports)">
+          <ul className="space-y-0.5">
+            {stats.publicApi.map((entry) => (
+              <li key={entry} className="mono-path text-ink-muted">
+                {entry}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {stats.licenses.length > 0 && (
+        <Card title="Dependency licenses">
+          <ul className="max-h-48 space-y-0.5 overflow-y-auto">
+            {stats.licenses.slice(0, 40).map((entry) => (
+              <li key={entry.packageName} className="flex justify-between gap-3 text-[11px]">
+                <span className="text-ink-muted">{entry.packageName}</span>
+                <span className="font-mono text-ink-faint">
+                  {entry.license ?? 'unknown'}
+                  {entry.version ? ` @ ${entry.version}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <Card title="Files by change impact score">
         {stats.topImpactFiles.length === 0 ? (

@@ -13,8 +13,12 @@ import {
   UnusedExportsView,
   SyntaxErrorsView,
   MergeConflictsView,
+  TodosView,
+  DuplicatesView,
+  ComplexityView,
 } from './components/views/Findings';
 import { ArchitectureRulesView } from './components/views/ArchitectureRules';
+import { MetricsView } from './components/views/Metrics';
 import { ReportsView } from './components/views/Reports';
 import { SettingsView } from './components/views/Settings';
 import { useUiStore, type ViewId } from './store/uiStore';
@@ -33,6 +37,10 @@ const VIEWS: Record<ViewId, () => JSX.Element> = {
   'type-errors': TypeErrorsView,
   'syntax-errors': SyntaxErrorsView,
   'merge-conflicts': MergeConflictsView,
+  todos: TodosView,
+  duplicates: DuplicatesView,
+  complexity: ComplexityView,
+  metrics: MetricsView,
   reports: ReportsView,
   settings: SettingsView,
 };

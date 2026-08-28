@@ -63,7 +63,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   error: null,
 
   setError: (error) => set({ error }),
-  setScanProgress: (scanProgress) => set({ scanProgress }),
+  setScanProgress: (scanProgress) => {
+    set({ scanProgress });
+    if (!scanProgress) return;
+    if (scanProgress.phase === 'done') {
+      set({ scanning: false });
+      void get().refreshAnalysis();
+    } else if (scanProgress.phase === 'failed') {
+      set({ scanning: false });
+    } else {
+      set({ scanning: true });
+    }
+  },
 
   loadProjects: async () => {
     try {

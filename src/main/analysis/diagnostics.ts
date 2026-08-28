@@ -1,4 +1,6 @@
 import { dirname, join, relative } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
@@ -184,17 +186,28 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
 
     let program: ts.Program;
     try {
-      program = ts.createProgram({
+      const infoKey = createHash('sha256').update(config.configPath).digest('hex').slice(0, 16);
+      const cacheDir = join(rootPath, '.tracedeck', 'cache');
+      mkdirSync(cacheDir, { recursive: true });
+      const tsBuildInfoFile = join(cacheDir, `${infoKey}.tsbuildinfo`);
+      const options: ts.CompilerOptions = {
+        ...config.options,
+        incremental: true,
+        tsBuildInfoFile,
+        noEmit: false,
+        emitDeclarationOnly: false,
+        noEmitOnError: false,
+      };
+      const host = ts.createIncrementalCompilerHost(options);
+      const incremental = ts.createIncrementalProgram({
         rootNames: config.fileNames,
-        options: {
-          ...config.options,
-          // Nothing is ever written to disk; only the diagnostics are wanted.
-          noEmit: true,
-          emitDeclarationOnly: false,
-          incremental: false,
-          tsBuildInfoFile: undefined,
-        },
+        options,
+        host,
       });
+      incremental.emit(undefined, (fileName, text, writeByteOrderMark) => {
+        if (fileName.endsWith('.tsbuildinfo')) host.writeFile(fileName, text, writeByteOrderMark);
+      });
+      program = incremental.getProgram();
     } catch (error) {
       limitations.push(
         `${toPosixPath(relative(rootPath, config.configPath))} could not be type checked: ${

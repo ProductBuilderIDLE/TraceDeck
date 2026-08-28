@@ -10,6 +10,7 @@ import type {
   SourceUnavailableDocument,
   SourceUnavailableReason,
 } from '@shared/types';
+import { readEditorConfig } from './formatService';
 import { decodeText, detectEncoding, isDecodableText } from './fileClassificationService';
 
 /**
@@ -90,6 +91,7 @@ function unavailable(
 export async function readSource(
   absolutePath: string,
   relativePath: string,
+  rootPath?: string,
 ): Promise<SourceDocument> {
   // lstat, not stat: a symlink must be reported as itself rather than silently followed.
   const stats = await fs.lstat(absolutePath);
@@ -175,6 +177,7 @@ export async function readSource(
   const totalLines = lineSpans.length;
   const truncated = totalLines > MAX_SOURCE_LINES;
   const kept = truncated ? lineSpans.slice(0, MAX_SOURCE_LINES) : lineSpans;
+  const editorConfig = rootPath ? await readEditorConfig(rootPath, relativePath) : undefined;
 
   return {
     kind: 'text',
@@ -188,5 +191,6 @@ export async function readSource(
     text,
     // A truncated view holds only part of the file, so saving it would destroy the rest.
     editable: !truncated,
+    ...(editorConfig ? { editorConfig } : {}),
   };
 }

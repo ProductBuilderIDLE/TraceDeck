@@ -10,3 +10,6 @@ coverage/
 .DS_Store
 .vite/
 tsconfig.*.tsbuildinfo
+
+# Scan cache written into any project TraceDeck analyses, including test fixtures.
+.tracedeck/

@@ -130,10 +130,10 @@ describe('dependency classification', () => {
     expect(result).toMatchObject({ reason: 'file-not-found' });
   });
 
-  it('still treats a preprocessor stylesheet as a non-source asset', () => {
+  it('treats a missing SCSS file as missing now that stylesheets are graph sources', () => {
     const result = resolveImport('./styles/tokens.scss', abs('src/app.ts'), context([]));
 
-    expect(result).toMatchObject({ reason: 'non-source-asset' });
+    expect(result).toMatchObject({ reason: 'file-not-found' });
   });
 
   it('treats image and JSON imports the same way', () => {

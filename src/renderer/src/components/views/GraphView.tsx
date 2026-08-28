@@ -9,11 +9,12 @@ import {
   Loader2,
   Maximize2,
   RefreshCcw,
+  Download,
   Search,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type { EdgeType, GraphPayload } from '@shared/types';
+import type { EdgeType, NodeType, GraphPayload } from '@shared/types';
 import { GRAPH_NODE_SOFT_LIMIT } from '@shared/constants';
 import { parseNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
@@ -39,6 +40,7 @@ const EDGE_FILTERS: Array<{ id: EdgeType; label: string }> = [
   { id: 're-export', label: 'Re-exports' },
   { id: 'dynamic-import', label: 'Dynamic' },
   { id: 'require', label: 'require()' },
+  { id: 'call', label: 'Calls' },
 ];
 
 /**
@@ -149,6 +151,8 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       style: { 'border-color': colors.dependency, 'border-width': 3, 'background-opacity': 0.5, 'z-index': 20 },
     },
     { selector: 'node.faded', style: { opacity: 0.12 } },
+    { selector: 'node.blast', style: { 'border-color': colors.selected, 'border-width': 4, 'z-index': 25 } },
+    { selector: 'node.held', style: { 'border-width': 3, 'background-opacity': 0.95, 'z-index': 22 } },
     { selector: 'node.hidden', style: { display: 'none' } },
     {
       selector: 'edge',
@@ -190,6 +194,7 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       },
     },
     { selector: 'edge.faded', style: { opacity: 0.04 } },
+    { selector: 'edge.blast', style: { width: 2.4, 'line-color': colors.selected, 'target-arrow-color': colors.selected, 'line-opacity': 1 } },
     { selector: 'edge.hidden', style: { display: 'none' } },
   ];
 }
@@ -261,10 +266,66 @@ function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
       target: edge.target,
       edgeType: edge.edgeType,
       unresolved: edge.unresolved ? 1 : 0,
+      typeOnly: edge.typeOnly ? 1 : 0,
     },
   }));
 
   return [...nodes, ...edges];
+}
+
+interface SavedGraphView {
+  name: string;
+  folderPrefix: string;
+  edgeTypes: EdgeType[];
+  hideTypeOnly: boolean;
+  collapseBarrels: boolean;
+  layout: LayoutName;
+}
+
+const SAVED_VIEWS_KEY = 'tracedeck.graph-views';
+
+function loadSavedViews(): SavedGraphView[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) ?? '[]') as SavedGraphView[];
+    return Array.isArray(parsed) ? parsed.slice(0, 12) : [];
+  } catch {
+    return [];
+  }
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function graphToSvg(cy: Core): string {
+  const bb = cy.elements().boundingBox();
+  const pad = 48;
+  const width = Math.max(1, bb.w + pad * 2);
+  const height = Math.max(1, bb.h + pad * 2);
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="${bb.x1 - pad} ${bb.y1 - pad} ${width} ${height}">`,
+    '<rect width="100%" height="100%" fill="transparent"/>',
+  ];
+  cy.edges().forEach((edge) => {
+    const source = edge.source().position();
+    const target = edge.target().position();
+    parts.push(
+      `<line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="#7a8494" stroke-width="1"/>`,
+    );
+  });
+  cy.nodes().forEach((node) => {
+    const position = node.position();
+    const color = String(node.data('color') ?? '#7a8494');
+    const radius = Number(node.data('size') ?? 18) / 2;
+    parts.push(
+      `<circle cx="${position.x}" cy="${position.y}" r="${radius}" fill="${escapeXml(color)}" fill-opacity="0.8"/>`,
+    );
+    parts.push(
+      `<text x="${position.x}" y="${position.y + radius + 10}" font-size="9" text-anchor="middle" fill="#9aa4b5">${escapeXml(String(node.data('label') ?? ''))}</text>`,
+    );
+  });
+  parts.push('</svg>');
+  return parts.join('');
 }
 
 export function GraphView(): JSX.Element {
@@ -276,6 +337,9 @@ export function GraphView(): JSX.Element {
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
   const selectNode = useUiStore((state) => state.selectNode);
   const openCode = useUiStore((state) => state.openCode);
+  const highlightNodeIds = useUiStore((state) => state.highlightNodeIds);
+  const graphSliceEdgeTypes = useUiStore((state) => state.graphSliceEdgeTypes);
+  const setGraphSliceEdgeTypes = useUiStore((state) => state.setGraphSliceEdgeTypes);
   const themeRevision = useUiStore((state) => state.themeRevision);
   const themeId = useUiStore((state) => state.theme);
   const isDark = !themeId.includes('light');
@@ -290,6 +354,14 @@ export function GraphView(): JSX.Element {
   const [focusMode, setFocusMode] = useState(false);
   const [folderPrefix, setFolderPrefix] = useState('');
   const [search, setSearch] = useState('');
+  const [hideTypeOnly, setHideTypeOnly] = useState(false);
+  const [collapseBarrels, setCollapseBarrels] = useState(false);
+  const [savedViews, setSavedViews] = useState<SavedGraphView[]>(() => loadSavedViews());
+  const [viewName, setViewName] = useState('');
+  const [minimap, setMinimap] = useState<{
+    nodes: Array<{ x: number; y: number; color: string }>;
+    view: { x: number; y: number; w: number; h: number };
+  } | null>(null);
 
   // Only the focus root belongs in the query key. Selecting a node while focus mode is off
   // must not refetch or re-lay-out the graph — that was what made clicking feel broken.
@@ -307,11 +379,14 @@ export function GraphView(): JSX.Element {
     try {
       const result = await invoke('graph:query', {
         projectId: project.id,
-        edgeTypes: [...edgeTypes],
+        edgeTypes: graphSliceEdgeTypes ?? [...edgeTypes],
         includeUnresolved,
         nodeLimit: GRAPH_NODE_SOFT_LIMIT,
         ...(folderPrefix ? { folderPrefix } : {}),
         ...(focusRoot ? { focusNodeId: focusRoot, focusDepth: 2 } : {}),
+        ...(graphSliceEdgeTypes?.includes('call')
+          ? { nodeTypes: ['file', 'symbol'] as NodeType[] }
+          : {}),
       });
       setPayload(result);
     } catch {
@@ -319,7 +394,7 @@ export function GraphView(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot]);
+  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes]);
 
   useEffect(() => {
     void load();
@@ -347,6 +422,18 @@ export function GraphView(): JSX.Element {
     cy.on('tap', (event) => {
       if (event.target === cy) selectNode(null);
     });
+    cy.on('mouseover', 'node', (event) => {
+      if (useUiStore.getState().selectedNodeId) return;
+      const node = event.target as cytoscape.NodeSingular;
+      const neighbourhood = node.union(node.incomers()).union(node.outgoers());
+      cy.elements().removeClass('held');
+      cy.elements().difference(neighbourhood).addClass('faded');
+      neighbourhood.addClass('held');
+    });
+    cy.on('mouseout', 'node', () => {
+      if (useUiStore.getState().selectedNodeId) return;
+      cy.elements().removeClass('held faded');
+    });
 
     cyRef.current = cy;
     return () => {
@@ -372,11 +459,27 @@ export function GraphView(): JSX.Element {
 
     cy.batch(() => {
       cy.elements().remove();
-      cy.add(toElements(payload, isDark));
+      const filtered: GraphPayload = {
+        ...payload,
+        edges: payload.edges.filter((edge) => {
+          if (hideTypeOnly && edge.typeOnly) return false;
+          return true;
+        }),
+        nodes: collapseBarrels
+          ? payload.nodes.filter((node) => !/(?:^|\/)index\.[cm]?[jt]sx?$/.test(node.path))
+          : payload.nodes,
+      };
+      if (collapseBarrels) {
+        const visible = new Set(filtered.nodes.map((node) => node.id));
+        filtered.edges = filtered.edges.filter(
+          (edge) => visible.has(edge.source) && visible.has(edge.target),
+        );
+      }
+      cy.add(toElements(filtered, isDark));
     });
     cy.layout(layoutOptions(layout, payload.nodes.length)).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload, layout]);
+  }, [payload, layout, hideTypeOnly, collapseBarrels]);
 
   // Highlighting is a pure class swap: no refetch, no relayout, viewport untouched.
   useEffect(() => {
@@ -402,6 +505,55 @@ export function GraphView(): JSX.Element {
       outgoing.addClass('outgoing');
     });
   }, [selectedNodeId, payload]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.nodes().removeClass('blast');
+    cy.edges().removeClass('blast');
+    for (const id of highlightNodeIds) {
+      cy.getElementById(id).addClass('blast');
+    }
+    cy.edges().forEach((edge) => {
+      if (
+        highlightNodeIds.includes(edge.source().id()) &&
+        highlightNodeIds.includes(edge.target().id())
+      ) {
+        edge.addClass('blast');
+      }
+    });
+  }, [highlightNodeIds, payload]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const update = (): void => {
+      const bb = cy.elements().boundingBox();
+      if (bb.w <= 0 || bb.h <= 0) {
+        setMinimap(null);
+        return;
+      }
+      const extent = cy.extent();
+      setMinimap({
+        nodes: cy.nodes().map((node) => ({
+          x: (node.position('x') - bb.x1) / bb.w,
+          y: (node.position('y') - bb.y1) / bb.h,
+          color: String(node.data('color') ?? '#888'),
+        })),
+        view: {
+          x: (extent.x1 - bb.x1) / bb.w,
+          y: (extent.y1 - bb.y1) / bb.h,
+          w: (extent.x2 - extent.x1) / bb.w,
+          h: (extent.y2 - extent.y1) / bb.h,
+        },
+      });
+    };
+    update();
+    cy.on('pan zoom layoutstop', update);
+    return () => {
+      cy.off('pan zoom layoutstop', update);
+    };
+  }, [payload, layout]);
 
   // Dim non-matching nodes as you type rather than yanking the viewport around.
   useEffect(() => {
@@ -519,6 +671,82 @@ export function GraphView(): JSX.Element {
           />
           Unresolved
         </label>
+        <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+          <input
+            type="checkbox"
+            checked={hideTypeOnly}
+            onChange={(event) => setHideTypeOnly(event.target.checked)}
+            className="accent-brand"
+          />
+          Hide type-only
+        </label>
+        <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+          <input
+            type="checkbox"
+            checked={collapseBarrels}
+            onChange={(event) => setCollapseBarrels(event.target.checked)}
+            className="accent-brand"
+          />
+          Collapse barrels
+        </label>
+        {graphSliceEdgeTypes && (
+          <Button size="sm" variant="primary" onClick={() => setGraphSliceEdgeTypes(null)}>
+            Clear call slice
+          </Button>
+        )}
+        <input
+          value={viewName}
+          onChange={(event) => setViewName(event.target.value)}
+          placeholder="View name"
+          className="w-24 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[10px] text-ink placeholder:text-ink-faint focus:border-brand focus:outline-none"
+          style={{ userSelect: 'text' }}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={viewName.trim().length === 0}
+          onClick={() => {
+            const next: SavedGraphView[] = [
+              {
+                name: viewName.trim(),
+                folderPrefix,
+                edgeTypes: [...edgeTypes],
+                hideTypeOnly,
+                collapseBarrels,
+                layout,
+              },
+              ...savedViews.filter((view) => view.name !== viewName.trim()),
+            ].slice(0, 12);
+            setSavedViews(next);
+            localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+            setViewName('');
+          }}
+        >
+          Save view
+        </Button>
+        {savedViews.length > 0 && (
+          <select
+            className="max-w-32 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[11px] text-ink"
+            defaultValue=""
+            onChange={(event) => {
+              const view = savedViews.find((entry) => entry.name === event.target.value);
+              event.currentTarget.selectedIndex = 0;
+              if (!view) return;
+              setFolderPrefix(view.folderPrefix);
+              setEdgeTypes(new Set(view.edgeTypes));
+              setHideTypeOnly(view.hideTypeOnly);
+              setCollapseBarrels(view.collapseBarrels);
+              setLayout(view.layout);
+            }}
+          >
+            <option value="">Saved views</option>
+            {savedViews.map((view) => (
+              <option key={view.name} value={view.name}>
+                {view.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         <Button
           size="sm"
@@ -554,6 +782,41 @@ export function GraphView(): JSX.Element {
             <Maximize2 size={11} />
             Fit
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Export the current graph as PNG"
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              const png = cy.png({ output: 'base64', full: true, bg: '#00000000' });
+              void invoke('system:save-export', {
+                defaultFileName: 'tracedeck-graph.png',
+                contents: png,
+                encoding: 'base64',
+              });
+            }}
+          >
+            <Download size={11} />
+            PNG
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Export the current graph as SVG"
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              void invoke('system:save-export', {
+                defaultFileName: 'tracedeck-graph.svg',
+                contents: graphToSvg(cy),
+                encoding: 'utf8',
+              });
+            }}
+          >
+            <Download size={11} />
+            SVG
+          </Button>
           <Button size="sm" variant="ghost" onClick={() => void load()} title="Reload">
             <RefreshCcw size={11} />
           </Button>
@@ -571,6 +834,31 @@ export function GraphView(): JSX.Element {
 
       <div className="relative min-h-0 flex-1">
         <div ref={containerRef} className="absolute inset-0" />
+
+        <div className="pointer-events-none absolute bottom-3 right-3 h-24 w-36 overflow-hidden rounded-md border border-edge bg-surface-1/95">
+          {minimap && (
+            <svg viewBox="0 0 1 1" className="h-full w-full" preserveAspectRatio="none">
+              {minimap.nodes.map((node, index) => (
+                <circle
+                  key={index}
+                  cx={node.x}
+                  cy={node.y}
+                  r="0.012"
+                  fill={node.color}
+                />
+              ))}
+              <rect
+                x={minimap.view.x}
+                y={minimap.view.y}
+                width={Math.max(0.04, minimap.view.w)}
+                height={Math.max(0.04, minimap.view.h)}
+                fill="rgb(var(--brand) / 0.15)"
+                stroke="rgb(var(--brand))"
+                strokeWidth="0.01"
+              />
+            </svg>
+          )}
+        </div>
 
         <div className="pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">

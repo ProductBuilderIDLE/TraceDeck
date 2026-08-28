@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ThemeId } from '@shared/theme';
+import type { EdgeType } from '@shared/types';
 import { parseNodeId } from '@shared/nodeIds';
 import { applyTheme, loadStoredTheme, storeTheme } from '../lib/theme';
 
@@ -14,6 +15,10 @@ export type ViewId =
   | 'type-errors'
   | 'syntax-errors'
   | 'merge-conflicts'
+  | 'todos'
+  | 'duplicates'
+  | 'complexity'
+  | 'metrics'
   | 'reports'
   | 'settings';
 
@@ -33,6 +38,10 @@ interface UiState {
   codeLine: number | null;
   /** Split position as a fraction of the main area given to the graph. */
   codeSplit: number;
+  editorTabs: string[];
+  recentPaths: string[];
+  highlightNodeIds: string[];
+  graphSliceEdgeTypes: EdgeType[] | null;
 
   setActiveView: (view: ViewId) => void;
   toggleInspector: () => void;
@@ -43,6 +52,9 @@ interface UiState {
   closeCode: () => void;
   toggleCode: () => void;
   setCodeSplit: (fraction: number) => void;
+  closeEditorTab: (path: string) => void;
+  setHighlightNodeIds: (nodeIds: string[]) => void;
+  setGraphSliceEdgeTypes: (edgeTypes: EdgeType[] | null) => void;
 }
 
 const initialTheme = loadStoredTheme();
@@ -58,6 +70,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   codePath: null,
   codeLine: null,
   codeSplit: 0.5,
+  editorTabs: [],
+  recentPaths: [],
+  highlightNodeIds: [],
+  graphSliceEdgeTypes: null,
 
   setActiveView: (activeView) => set({ activeView }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
@@ -79,8 +95,23 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => ({ theme, themeRevision: state.themeRevision + 1 }));
   },
 
-  openCode: (path, line = null) => set({ codeOpen: true, codePath: path, codeLine: line }),
+  openCode: (path, line = null) =>
+    set((state) => ({
+      codeOpen: true,
+      codePath: path,
+      codeLine: line,
+      editorTabs: state.editorTabs.includes(path) ? state.editorTabs : [...state.editorTabs, path].slice(-12),
+      recentPaths: [path, ...state.recentPaths.filter((entry) => entry !== path)].slice(0, 12),
+    })),
   closeCode: () => set({ codeOpen: false }),
+  closeEditorTab: (path) =>
+    set((state) => {
+      const editorTabs = state.editorTabs.filter((entry) => entry !== path);
+      const codePath = state.codePath === path ? (editorTabs[editorTabs.length - 1] ?? null) : state.codePath;
+      return { editorTabs, codePath, codeOpen: editorTabs.length > 0 && state.codeOpen };
+    }),
+  setHighlightNodeIds: (highlightNodeIds) => set({ highlightNodeIds }),
+  setGraphSliceEdgeTypes: (graphSliceEdgeTypes) => set({ graphSliceEdgeTypes }),
   toggleCode: () => {
     const { codeOpen, codePath, selectedNodeId } = get();
     if (codeOpen) {

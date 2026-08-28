@@ -8,6 +8,7 @@ import { reportHandlers } from './reportHandlers';
 import { ruleHandlers } from './ruleHandlers';
 import { scanHandlers } from './scanHandlers';
 import { systemHandlers } from './systemHandlers';
+import { extraHandlers } from './extraHandlers';
 
 export function registerAllHandlers(store: DataStore, databasePath: () => string): void {
   const analysis = new AnalysisService(store);
@@ -19,6 +20,7 @@ export function registerAllHandlers(store: DataStore, databasePath: () => string
     ...ruleHandlers(store),
     ...reportHandlers(store, analysis),
     ...systemHandlers(store, databasePath),
+    ...extraHandlers(store, analysis),
   });
 
   // A channel declared in the contract but never implemented would fail at runtime with an

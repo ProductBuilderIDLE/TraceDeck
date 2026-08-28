@@ -27,6 +27,8 @@ export interface UnusedExportOptions {
   barrelCaveats: ReadonlyMap<string, readonly string[]>;
   /** Paths declared as package entry points, e.g. package.json "main"/"exports". */
   packageEntryPoints: readonly string[];
+  /** Files Git recently renamed; incoming references may still use the old path. */
+  renamedPaths?: ReadonlySet<string>;
 }
 
 export interface UnusedExportCandidate {
@@ -94,6 +96,12 @@ export function findUnusedExportCandidates(
 
     if (symbol.symbolKind === 'react-component') {
       caveats.push('Components are sometimes referenced only by a framework route or registry.');
+    }
+
+    if (options.renamedPaths?.has(filePath)) {
+      caveats.push(
+        'This file was renamed in Git history. Incoming references may still use the old path.',
+      );
     }
 
     candidates.push({

@@ -218,6 +218,14 @@ describe('inventory and graph counts are reported separately', () => {
     expect(summary['graphEligibleFiles']).toBeGreaterThan(0);
   });
 
+  it('renders a changed-since-scan section even without a previous snapshot', () => {
+    const markdown = renderMarkdown(
+      bundleFor({ sections: ['changed-since-scan'] }),
+    );
+
+    expect(markdown).toMatch(/previous scan/i);
+  });
+
   it('reports the same literal numbers in every format', () => {
     const bundle = bundleFor();
     const summary = (JSON.parse(renderJson(bundle)) as { summary: Record<string, number> }).summary;

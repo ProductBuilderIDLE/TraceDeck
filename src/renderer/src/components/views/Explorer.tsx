@@ -10,7 +10,8 @@ import {
   Shapes,
   Type,
 } from 'lucide-react';
-import type { NodeType, SearchResult, SymbolKind } from '@shared/types';
+import type { NodeType, SearchResult, SymbolKind, TextSearchHit } from '@shared/types';
+import { ALL_SYMBOL_KINDS } from '@shared/types';
 import { fileNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
@@ -151,6 +152,20 @@ function ResultRow({ result }: { result: SearchResult }): JSX.Element {
   );
 }
 
+function TextHitRow({ hit }: { hit: TextSearchHit }): JSX.Element {
+  const openCode = useUiStore((state) => state.openCode);
+  return (
+    <button
+      type="button"
+      onClick={() => openCode(hit.relativePath, hit.line)}
+      className="flex w-full flex-col items-start rounded px-2 py-1.5 text-left hover:bg-surface-2"
+    >
+      <PathLabel path={`${hit.relativePath}:${hit.line}`} />
+      <span className="truncate text-[11px] text-ink-muted">{hit.preview}</span>
+    </button>
+  );
+}
+
 const TYPE_FILTERS: Array<{ id: NodeType; label: string }> = [
   { id: 'file', label: 'Files' },
   { id: 'folder', label: 'Folders' },
@@ -165,6 +180,11 @@ export function Explorer(): JSX.Element {
   const [types, setTypes] = useState<Set<NodeType>>(new Set(['file', 'folder', 'symbol']));
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['src']));
+  const [exportedOnly, setExportedOnly] = useState(false);
+  const [kindFilter, setKindFilter] = useState<Set<SymbolKind>>(new Set());
+  const [textHits, setTextHits] = useState<TextSearchHit[]>([]);
+  const recentPaths = useUiStore((state) => state.recentPaths);
+  const selectNode = useUiStore((state) => state.selectNode);
 
   const toggle = useCallback((path: string) => {
     setExpanded((current) => {
@@ -198,6 +218,7 @@ export function Explorer(): JSX.Element {
   useEffect(() => {
     if (!project || query.trim().length === 0) {
       setResults([]);
+      setTextHits([]);
       return;
     }
 
@@ -209,18 +230,27 @@ export function Explorer(): JSX.Element {
         query: query.trim(),
         types: [...types],
         limit: 100,
+        exportedOnly,
+        ...(kindFilter.size > 0 ? { kinds: [...kindFilter] } : {}),
       })
         .then((found) => {
           if (!cancelled) setResults(found);
         })
         .catch(() => undefined);
+      invoke('search:text', { projectId: project.id, query: query.trim(), limit: 40 })
+        .then((hits) => {
+          if (!cancelled) setTextHits(hits);
+        })
+        .catch(() => {
+          if (!cancelled) setTextHits([]);
+        });
     }, 140);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [project, query, types]);
+  }, [project, query, types, exportedOnly, kindFilter]);
 
   const tree = useMemo(() => buildTree(filePaths), [filePaths]);
 
@@ -244,7 +274,7 @@ export function Explorer(): JSX.Element {
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search files, folders, and symbols…"
+            placeholder="Search files, folders, symbols, and text…"
             className="w-full rounded-md border border-edge bg-surface-2 py-1.5 pl-8 pr-2.5 text-[12px] text-ink placeholder:text-ink-faint focus:border-brand focus:outline-none"
             style={{ userSelect: 'text' }}
           />
@@ -273,6 +303,37 @@ export function Explorer(): JSX.Element {
               {filter.label}
             </button>
           ))}
+          <label className="ml-auto flex items-center gap-1 text-[10px] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={exportedOnly}
+              onChange={(event) => setExportedOnly(event.target.checked)}
+              className="accent-brand"
+            />
+            Exported symbols
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {ALL_SYMBOL_KINDS.filter((kind) => kind !== 'unknown').map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              onClick={() =>
+                setKindFilter((current) => {
+                  const next = new Set(current);
+                  if (next.has(kind)) next.delete(kind);
+                  else next.add(kind);
+                  return next;
+                })
+              }
+              className={clsx(
+                'rounded px-1.5 py-0.5 text-[10px]',
+                kindFilter.has(kind) ? 'bg-brand/15 text-brand' : 'bg-surface-2 text-ink-faint hover:text-ink',
+              )}
+            >
+              {kind}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -287,10 +348,38 @@ export function Explorer(): JSX.Element {
               {results.map((result) => (
                 <ResultRow key={result.nodeId} result={result} />
               ))}
+              {textHits.length > 0 && (
+                <div className="mt-2 border-t border-edge pt-2">
+                  <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                    Text matches
+                  </p>
+                  {textHits.map((hit) => (
+                    <TextHitRow key={`${hit.relativePath}:${hit.line}:${hit.column}`} hit={hit} />
+                  ))}
+                </div>
+              )}
             </div>
           )
         ) : (
           <>
+            {recentPaths.length > 0 && (
+              <div className="mb-2 border-b border-edge pb-2">
+                <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                  Recent
+                </p>
+                {recentPaths.slice(0, 8).map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    onClick={() => selectNode(fileNodeId(path))}
+                    className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-muted hover:bg-surface-2"
+                  >
+                    <FileCode size={11} className="shrink-0 text-ink-faint" />
+                    <span className="mono-path truncate">{path}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <TreeBranch node={tree} depth={0} expanded={expanded} onToggle={toggle} />
             {filePaths.length >= 200 && (
               <p className="px-2 pt-3 text-[11px] text-ink-faint">

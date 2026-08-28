@@ -244,7 +244,41 @@ function FindingBody({ finding }: { finding: Finding }): JSX.Element {
       return <SyntaxErrorBody finding={finding} />;
     case 'merge-conflict':
       return <MergeConflictBody finding={finding} />;
+    case 'todo-comment':
+    case 'duplicate-code':
+    case 'complexity-hotspot':
+      return <MetricFindingBody finding={finding} />;
   }
+}
+
+function MetricFindingBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details;
+  if (details.kind === 'todo-comment') {
+    return (
+      <p className="text-[11px] text-ink-muted">
+        {details.tag} at line {details.line}: {details.text || finding.description}
+      </p>
+    );
+  }
+  if (details.kind === 'duplicate-code') {
+    return (
+      <ul className="space-y-0.5">
+        {details.filePaths.map((path, index) => (
+          <li key={`${path}-${index}`} className="mono-path text-ink-muted">
+            {path}:{details.startLines[index] ?? 1}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (details.kind === 'complexity-hotspot') {
+    return (
+      <p className="text-[11px] text-ink-muted">
+        {details.symbolName} complexity {details.complexity}, nesting {details.nestingDepth} (line {details.line})
+      </p>
+    );
+  }
+  return <p className="text-[11px] text-ink-muted">{finding.description}</p>;
 }
 
 export function FindingsView({
@@ -263,6 +297,7 @@ export function FindingsView({
   const [findings, setFindings] = useState<Finding[]>([]);
   const [showDismissed, setShowDismissed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cursor, setCursor] = useState(0);
 
   useEffect(() => {
     if (!project) return;
@@ -294,6 +329,28 @@ export function FindingsView({
 
   const dismissedCount = findings.filter((finding) => finding.dismissedAt).length;
 
+  useEffect(() => {
+    setCursor(0);
+  }, [findingType, visible.length]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'j') setCursor((value) => Math.min(visible.length - 1, value + 1));
+      if (event.key === 'k') setCursor((value) => Math.max(0, value - 1));
+      if (event.key === 'Enter') {
+        const finding = visible[cursor];
+        const nodeId = finding?.relatedNodeIds[0];
+        if (nodeId) {
+          selectNode(nodeId);
+          setActiveView('graph');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [visible, cursor, selectNode, setActiveView]);
+
   const handleDismiss = async (finding: Finding): Promise<void> => {
     await dismissFinding(finding.id, finding.dismissedAt === null);
     setFindings((current) =>
@@ -323,7 +380,7 @@ export function FindingsView({
               {title} <span className="text-ink-faint">({visible.length})</span>
             </h2>
             <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-ink-muted">
-              {description}
+              {description} Press j/k to move, Enter to open in the graph.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -341,10 +398,14 @@ export function FindingsView({
           <EmptyState title={emptyTitle} description={emptyDescription} />
         ) : (
           <ul className="divide-y divide-edge">
-            {visible.map((finding) => (
+            {visible.map((finding, index) => (
               <li
                 key={finding.id}
-                className={clsx('px-5 py-3', finding.dismissedAt && 'opacity-45')}
+                className={clsx(
+                  'px-5 py-3',
+                  finding.dismissedAt && 'opacity-45',
+                  index === cursor && 'bg-surface-2',
+                )}
               >
                 <div className="mb-1.5 flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
@@ -453,6 +514,42 @@ export function MergeConflictsView(): JSX.Element {
       description="Unresolved Git conflict markers left in project files."
       emptyTitle="No merge conflicts"
       emptyDescription="No file in this project contains unresolved conflict markers."
+    />
+  );
+}
+
+export function TodosView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="todo-comment"
+      title="TODO comments"
+      description="TODO, FIXME, and HACK comments found in inventoried text files."
+      emptyTitle="No TODO comments"
+      emptyDescription="No TODO, FIXME, or HACK comments were found."
+    />
+  );
+}
+
+export function DuplicatesView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="duplicate-code"
+      title="Duplicate code"
+      description="Normalised six-line blocks that appear more than once. This is a text match, not a semantic clone detector."
+      emptyTitle="No duplicated blocks"
+      emptyDescription="No six-line duplicated blocks were found among files read this scan."
+    />
+  );
+}
+
+export function ComplexityView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="complexity-hotspot"
+      title="Complexity hotspots"
+      description="Functions whose cyclomatic complexity is 10 or higher."
+      emptyTitle="No complexity hotspots"
+      emptyDescription="No function crossed the complexity threshold."
     />
   );
 }

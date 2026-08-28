@@ -126,7 +126,7 @@ export function computeRiskScore(inputs: RiskScoreInputs): RiskScore {
       : parsed.path
     : nodeId;
 
-  return { nodeId, path, score, factors, formulaDescription: RISK_FORMULA_DESCRIPTION };
+  return { nodeId, path, score, percentile: 0, factors, formulaDescription: RISK_FORMULA_DESCRIPTION };
 }
 
 export const MAX_POSSIBLE_SCORE = Object.values(WEIGHTS).reduce(

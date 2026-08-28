@@ -32,6 +32,8 @@ const SECTIONS: Array<{ id: ReportSection; label: string }> = [
   { id: 'architecture-violations', label: 'Architecture violations' },
   { id: 'unresolved-imports', label: 'Unresolved imports' },
   { id: 'type-errors', label: 'Type errors' },
+  { id: 'blast-radius', label: 'Blast radius of high-impact files' },
+  { id: 'changed-since-scan', label: 'Impact of files changed since last scan' },
   { id: 'limitations', label: 'Analysis limitations' },
 ];
 
@@ -41,6 +43,11 @@ const FINDING_TYPES: Array<{ id: FindingType; label: string }> = [
   { id: 'architecture-violation', label: 'Architecture violations' },
   { id: 'unresolved-import', label: 'Unresolved imports' },
   { id: 'type-error', label: 'Type errors' },
+  { id: 'syntax-error', label: 'Syntax errors' },
+  { id: 'merge-conflict', label: 'Merge conflicts' },
+  { id: 'todo-comment', label: 'TODO comments' },
+  { id: 'duplicate-code', label: 'Duplicate code' },
+  { id: 'complexity-hotspot', label: 'Complexity hotspots' },
 ];
 
 type ScopeKind = ReportScope['kind'];

@@ -12,6 +12,7 @@ export const ALWAYS_EXCLUDED_DIRS: readonly string[] = [
   '.cache',
   '.svelte-kit',
   '.nuxt',
+  '.tracedeck',
 ];
 
 export const SOURCE_EXTENSIONS: readonly string[] = [
@@ -30,6 +31,9 @@ export const SOURCE_EXTENSIONS: readonly string[] = [
   '.html',
   '.htm',
   '.css',
+  '.scss',
+  '.sass',
+  '.less',
   '.py',
   '.go',
   '.rs',
@@ -62,6 +66,9 @@ export const RESOLUTION_EXTENSIONS: readonly string[] = [
   '.html',
   '.htm',
   '.css',
+  '.scss',
+  '.sass',
+  '.less',
   '.py',
   '.go',
   '.rs',
@@ -75,7 +82,7 @@ export const INDEX_BASENAMES: readonly string[] = ['index'];
  * graph TraceDeck builds.
  */
 export const NON_SOURCE_IMPORT_EXTENSIONS: readonly string[] = [
-  '.scss', '.sass', '.less', '.styl',
+  '.styl',
   '.json', '.json5', '.yaml', '.yml', '.toml',
   '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.bmp',
   '.woff', '.woff2', '.ttf', '.otf', '.eot',

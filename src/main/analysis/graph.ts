@@ -312,6 +312,50 @@ export function buildGraph(files: readonly FileToBuild[], context: ResolverConte
         });
       }
     }
+
+    const localCallees = new Set(
+      file.parsed.symbols
+        .filter((symbol) => symbol.kind === 'function' || symbol.kind === 'react-component')
+        .map((symbol) => symbol.name),
+    );
+
+    for (const call of file.parsed.calls) {
+      const importRecord = file.parsed.imports.find((record) =>
+        record.importedNames.includes(call.callee),
+      );
+      if (importRecord && !importRecord.isDynamicExpression) {
+        const resolution = resolveImport(importRecord.specifier, file.absolutePath, context);
+        if (resolution.status !== 'resolved') continue;
+        const targetRelative = absoluteToRelative.get(toPosixPath(resolution.absolutePath));
+        if (!targetRelative) continue;
+        const declaration = findDeclaration(targetRelative, call.callee, new Set());
+        edges.push({
+          fromNodeType: 'file',
+          fromNodeId: fromId,
+          toNodeType: declaration ? 'symbol' : 'file',
+          toNodeId: declaration
+            ? symbolNodeId(declaration.filePath, declaration.symbolName)
+            : fileNodeId(targetRelative),
+          edgeType: 'call',
+          sourceRelativePath: file.relativePath,
+          sourceLine: call.line,
+          metadata: { callee: call.callee, specifier: importRecord.specifier },
+        });
+        continue;
+      }
+
+      if (!localCallees.has(call.callee)) continue;
+      edges.push({
+        fromNodeType: 'file',
+        fromNodeId: fromId,
+        toNodeType: 'symbol',
+        toNodeId: symbolNodeId(file.relativePath, call.callee),
+        edgeType: 'call',
+        sourceRelativePath: file.relativePath,
+        sourceLine: call.line,
+        metadata: { callee: call.callee },
+      });
+    }
   }
 
   return { edges, unresolved, barrelCaveats };

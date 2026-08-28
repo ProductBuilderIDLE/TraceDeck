@@ -29,10 +29,24 @@ export interface ParsedSymbol {
   metadata: SymbolMetadata;
 }
 
+export interface ParsedCall {
+  callee: string;
+  line: number;
+}
+
+export interface SyntaxIssue {
+  line: number;
+  column: number;
+  message: string;
+}
+
 export interface ParsedFile {
   imports: ParsedImport[];
   symbols: ParsedSymbol[];
+  calls: ParsedCall[];
   parseErrors: string[];
+  /** Line-addressable syntax problems; the scanner turns these into findings. */
+  syntaxIssues: SyntaxIssue[];
   /** Honest boundaries that did not prevent parsing, such as unanalysed template regions. */
   limitations: string[];
 }
@@ -71,8 +85,8 @@ export function sourceContainerLimitations(fileName: string): string[] {
   const extension = sourceContainerExtension(fileName);
   if (!extension) return [];
   return [
-    `${extension} source container: script regions only were analysed; template, markup, and ` +
-      'style regions were not analysed.',
+    `${extension} source container: script regions analysed by the TypeScript compiler; ` +
+      'template and style regions analysed via tree-sitter.',
   ];
 }
 
@@ -157,6 +171,41 @@ function scriptRegions(contents: string): ScriptExtraction {
   }
 
   return { regions, limitations };
+}
+
+export function markupTagRegions(contents: string, tag: 'template' | 'style'): SourceRegion[] {
+  const regions: SourceRegion[] = [];
+  const comments = markupCommentRegions(contents);
+  const blocks = new RegExp(`<${tag}\\b([^>]*)>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi');
+  for (const match of contents.matchAll(blocks)) {
+    if (match.index === undefined) continue;
+    if (comments.some((comment) => match.index >= comment.start && match.index < comment.end)) {
+      continue;
+    }
+    const openingEnd = match[0].indexOf('>');
+    const closingStart = match[0].toLowerCase().lastIndexOf(`</${tag}`);
+    if (openingEnd < 0 || closingStart < openingEnd) continue;
+    regions.push({
+      start: match.index + openingEnd + 1,
+      end: match.index + closingStart,
+    });
+  }
+  return regions;
+}
+
+/** Keeps tagged regions and blanks everything else, preserving line numbers. */
+export function blankOutside(contents: string, regions: readonly SourceRegion[]): string {
+  if (regions.length === 0) return contents.replace(/[^\n]/g, ' ');
+  const ordered = [...regions].sort((left, right) => left.start - right.start);
+  let output = '';
+  let cursor = 0;
+  for (const region of ordered) {
+    output += contents.slice(cursor, region.start).replace(/[^\n]/g, ' ');
+    output += contents.slice(region.start, region.end);
+    cursor = region.end;
+  }
+  output += contents.slice(cursor).replace(/[^\n]/g, ' ');
+  return output;
 }
 
 /**
@@ -261,6 +310,87 @@ function extendsReactComponent(node: ts.ClassDeclaration): boolean {
   );
 }
 
+function complexityOf(node: ts.Node): { complexity: number; nestingDepth: number } {
+  let decisions = 0;
+  let maxNest = 0;
+
+  const walk = (current: ts.Node, nest: number): void => {
+    const isDecision =
+      ts.isIfStatement(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current) ||
+      ts.isWhileStatement(current) ||
+      ts.isDoStatement(current) ||
+      ts.isCaseClause(current) ||
+      ts.isCatchClause(current) ||
+      ts.isConditionalExpression(current) ||
+      (ts.isBinaryExpression(current) &&
+        (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+          current.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+          current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken));
+
+    const next = isDecision ? nest + 1 : nest;
+    if (isDecision) {
+      decisions += 1;
+      if (next > maxNest) maxNest = next;
+    }
+    ts.forEachChild(current, (child) => walk(child, next));
+  };
+
+  walk(node, 0);
+  return { complexity: decisions + 1, nestingDepth: maxNest };
+}
+
+function classLcom(node: ts.ClassDeclaration): number {
+  const fields = new Set<string>();
+  for (const member of node.members) {
+    if (ts.isPropertyDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
+      fields.add(member.name.text);
+    }
+  }
+
+  const methods: Array<Set<string>> = [];
+  for (const member of node.members) {
+    let body: ts.Block | ts.Expression | undefined;
+    if (ts.isMethodDeclaration(member)) body = member.body;
+    else if (
+      ts.isPropertyDeclaration(member) &&
+      member.initializer &&
+      (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
+    ) {
+      body = member.initializer.body;
+    }
+    if (!body) continue;
+    const used = new Set<string>();
+    const visit = (current: ts.Node): void => {
+      if (
+        ts.isPropertyAccessExpression(current) &&
+        current.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        ts.isIdentifier(current.name) &&
+        fields.has(current.name.text)
+      ) {
+        used.add(current.name.text);
+      }
+      ts.forEachChild(current, visit);
+    };
+    visit(body);
+    methods.push(used);
+  }
+
+  if (methods.length <= 1 || fields.size === 0) return 0;
+  let disconnected = 0;
+  let pairs = 0;
+  for (let left = 0; left < methods.length; left += 1) {
+    for (let right = left + 1; right < methods.length; right += 1) {
+      pairs += 1;
+      const shared = [...(methods[left] ?? [])].some((field) => methods[right]?.has(field));
+      if (!shared) disconnected += 1;
+    }
+  }
+  return pairs === 0 ? 0 : disconnected / pairs;
+}
+
 export function parseSourceFile(fileName: string, contents: string): ParsedFile {
   const prepared = prepareSource(fileName, contents);
   const sourceFile = ts.createSourceFile(
@@ -273,7 +403,26 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   const imports: ParsedImport[] = [];
   const symbols: ParsedSymbol[] = [];
+  const calls: ParsedCall[] = [];
   const parseErrors: string[] = [];
+  const syntaxIssues: SyntaxIssue[] = [];
+
+  const rawParseDiagnostics = (
+    sourceFile as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }
+  ).parseDiagnostics;
+  if (rawParseDiagnostics) {
+    for (const diagnostic of rawParseDiagnostics) {
+      const position =
+        diagnostic.start === undefined
+          ? { line: 0, character: 0 }
+          : sourceFile.getLineAndCharacterOfPosition(diagnostic.start);
+      syntaxIssues.push({
+        line: position.line + 1,
+        column: position.character + 1,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+      });
+    }
+  }
 
   const lineOf = (node: ts.Node): number => {
     try {
@@ -438,6 +587,19 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
     });
   }
 
+  function recordLocalCall(node: ts.CallExpression): void {
+    if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return;
+    if (ts.isIdentifier(node.expression) && node.expression.text === 'require') return;
+
+    let callee: string | null = null;
+    if (ts.isIdentifier(node.expression)) callee = node.expression.text;
+    else if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.name)) {
+      callee = node.expression.name.text;
+    }
+    if (!callee) return;
+    calls.push({ callee, line: lineOf(node) });
+  }
+
   function recordDeclaration(node: ts.Node): void {
     if (ts.isFunctionDeclaration(node) && node.name) {
       const name = node.name.text;
@@ -451,6 +613,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
         metadata: {
           isAsync: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
           paramCount: node.parameters.length,
+          ...complexityOf(node),
         },
       });
       return;
@@ -467,7 +630,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
         isDefaultExport: isExported(node) && isDefault(node),
         startLine: lineOf(node),
         endLine: endLineOf(node),
-        metadata: {},
+        metadata: { lcom: classLcom(node) },
       });
       return;
     }
@@ -529,6 +692,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
             looksLikeComponentName(name) && containsJsx(initializer) ? 'react-component' : 'function';
           metadata.isAsync = hasModifier(initializer, ts.SyntaxKind.AsyncKeyword);
           metadata.paramCount = initializer.parameters.length;
+          Object.assign(metadata, complexityOf(initializer));
         }
 
         addSymbol({
@@ -572,6 +736,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
       recordExportDeclaration(node);
     } else if (ts.isCallExpression(node)) {
       recordCallLikeImport(node);
+      recordLocalCall(node);
     } else if (ts.isImportEqualsDeclaration(node)) {
       if (
         ts.isExternalModuleReference(node.moduleReference) &&
@@ -599,5 +764,5 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   ts.forEachChild(sourceFile, visit);
 
-  return { imports, symbols, parseErrors, limitations: prepared.limitations };
+  return { imports, symbols, calls, parseErrors, syntaxIssues, limitations: prepared.limitations };
 }

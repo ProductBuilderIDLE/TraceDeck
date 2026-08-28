@@ -13,6 +13,7 @@ function mapFinding(row: FindingRow): Finding {
     description: row.description,
     relatedNodeIds: parseJson<string[]>(row.related_node_ids_json, []),
     details: parseJson<FindingDetails>(row.details_json, {} as FindingDetails),
+    fingerprint: row.fingerprint,
     createdAt: row.created_at,
     dismissedAt: row.dismissed_at,
   };

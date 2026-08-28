@@ -234,6 +234,46 @@ export function renderMarkdown(bundle: ReportBundle): string {
     }
   }
 
+  if (has('blast-radius') && bundle.stats.topImpactFiles.length > 0) {
+    lines.push('## Blast radius of high-impact files', '');
+    lines.push(
+      'These scores count dependents, cycles, and missing tests. They rank connectivity in this ' +
+        'repository; they are not a measurement of defect risk.',
+      '',
+    );
+    lines.push('| File | Score | Percentile |', '| --- | ---: | ---: |');
+    for (const entry of bundle.stats.topImpactFiles) {
+      lines.push(
+        `| \`${escapeMarkdownCell(entry.path)}\` | ${entry.score} | ${entry.percentile} |`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (has('changed-since-scan')) {
+    const comparison = bundle.stats.scanComparison;
+    lines.push('## Impact of findings changed since the previous scan', '');
+    if (!comparison || comparison.previousScanId === null) {
+      lines.push('No previous scan is stored to compare against.', '');
+    } else {
+      lines.push(
+        `${comparison.added} finding(s) appeared, ${comparison.removed} disappeared, and ` +
+          `${comparison.persisted} stayed the same.`,
+        '',
+      );
+      if (comparison.addedTitles.length > 0) {
+        lines.push('Newly reported:', '');
+        for (const title of comparison.addedTitles) lines.push(`- ${title}`);
+        lines.push('');
+      }
+      if (comparison.removedTitles.length > 0) {
+        lines.push('No longer reported:', '');
+        for (const title of comparison.removedTitles) lines.push(`- ${title}`);
+        lines.push('');
+      }
+    }
+  }
+
   if (has('limitations')) {
     lines.push('## Analysis limitations', '');
     if (bundle.limitations.length === 0) {
@@ -270,6 +310,7 @@ export function renderJson(bundle: ReportBundle): string {
       topImpactFiles: bundle.stats.topImpactFiles,
       findings: bundle.findings,
       limitations: bundle.limitations,
+      scanComparison: bundle.stats.scanComparison,
     },
     null,
     2,
@@ -431,6 +472,54 @@ export function renderHtml(bundle: ReportBundle): string {
         }),
       ),
     );
+    parts.push('</section>');
+  }
+
+  if (has('blast-radius') && bundle.stats.topImpactFiles.length > 0) {
+    parts.push('<section><h2>Blast radius of high-impact files</h2>');
+    parts.push(
+      '<p class="note">These scores count dependents, cycles, and missing tests. They rank ' +
+        'connectivity in this repository; they are not a measurement of defect risk.</p>',
+    );
+    parts.push(
+      table(
+        ['File', 'Score', 'Percentile'],
+        bundle.stats.topImpactFiles.map((entry) => [
+          entry.path,
+          String(entry.score),
+          String(entry.percentile),
+        ]),
+      ),
+    );
+    parts.push('</section>');
+  }
+
+  if (has('changed-since-scan')) {
+    const comparison = bundle.stats.scanComparison;
+    parts.push('<section><h2>Impact of findings changed since the previous scan</h2>');
+    if (!comparison || comparison.previousScanId === null) {
+      parts.push('<p class="empty">No previous scan is stored to compare against.</p>');
+    } else {
+      parts.push(
+        `<p>${escapeHtml(String(comparison.added))} finding(s) appeared, ` +
+          `${escapeHtml(String(comparison.removed))} disappeared, and ` +
+          `${escapeHtml(String(comparison.persisted))} stayed the same.</p>`,
+      );
+      if (comparison.addedTitles.length > 0) {
+        parts.push(
+          `<p class="note">Newly reported</p><ul>${comparison.addedTitles
+            .map((title) => `<li>${escapeHtml(title)}</li>`)
+            .join('')}</ul>`,
+        );
+      }
+      if (comparison.removedTitles.length > 0) {
+        parts.push(
+          `<p class="note">No longer reported</p><ul>${comparison.removedTitles
+            .map((title) => `<li>${escapeHtml(title)}</li>`)
+            .join('')}</ul>`,
+        );
+      }
+    }
     parts.push('</section>');
   }
 

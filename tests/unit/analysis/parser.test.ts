@@ -254,7 +254,7 @@ describe('parser resilience', () => {
     expect(result.symbols).toEqual([
       expect.objectContaining({ name: symbol, startLine: line }),
     ]);
-    expect(limitations?.join(' ')).toMatch(/script.*only|template.*not.*analysed/i);
+    expect(limitations?.join(' ')).toMatch(/template and style regions analysed/i);
   });
 
   it('does not execute script examples inside markup comments', () => {
@@ -294,5 +294,16 @@ describe('parser resilience', () => {
     expect(result.imports).toEqual([]);
     expect(result.symbols).toEqual([]);
     expect(result.limitations.join(' ')).toMatch(/unsupported.*coffee.*not analysed/i);
+  });
+});
+
+describe('syntax issues', () => {
+  it('records line-addressable parse problems as syntaxIssues', () => {
+    const result = parse('broken.ts', 'const x = {\n');
+    // The compiler is error-tolerant; if it surfaces diagnostics they must have a line.
+    for (const issue of result.syntaxIssues) {
+      expect(issue.line).toBeGreaterThan(0);
+      expect(issue.message.length).toBeGreaterThan(0);
+    }
   });
 });

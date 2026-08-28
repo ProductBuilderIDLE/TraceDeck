@@ -201,3 +201,37 @@ describe('loadProjectTsConfig', () => {
     expect(config.warnings.join(' ')).toMatch(/Only relative imports can be resolved/);
   });
 });
+
+/**
+ * A declaration file is a type sidecar, not the module. Resolving to it would drop every
+ * runtime edge the implementation contributes.
+ */
+describe('declaration files never shadow an implementation', () => {
+  it('resolves to the implementation when a .d.ts sits beside it', () => {
+    const context: ResolverContext = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([abs('src/pair/foo.js'), abs('src/pair/foo.d.ts')]),
+    };
+
+    const result = resolveImport('./pair/foo', abs('src/app.ts'), context);
+
+    expect(result.status).toBe('resolved');
+    if (result.status !== 'resolved') throw new Error('expected resolved');
+    expect(result.absolutePath.endsWith('foo.js')).toBe(true);
+  });
+
+  it('still resolves to the declaration when there is no implementation', () => {
+    const context: ResolverContext = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([abs('src/types/only.d.ts')]),
+    };
+
+    const result = resolveImport('./types/only', abs('src/app.ts'), context);
+
+    expect(result.status).toBe('resolved');
+    if (result.status !== 'resolved') throw new Error('expected resolved');
+    expect(result.absolutePath.endsWith('only.d.ts')).toBe(true);
+  });
+});

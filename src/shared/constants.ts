@@ -28,17 +28,27 @@ export const SOURCE_EXTENSIONS: readonly string[] = [
   '.astro',
 ];
 
-/** Extension candidates appended to an extensionless import specifier, in resolution order. */
+/**
+ * Extension candidates appended to an extensionless import specifier, in resolution order.
+ *
+ * `.d.ts` is deliberately tried after the implementation extensions, which differs from the
+ * TypeScript compiler's own order. The compiler prefers a declaration because it is
+ * authoritative for types; this tool builds a dependency graph, where the implementation is
+ * what carries the runtime imports. Preferring the declaration made "./foo" resolve to a
+ * foo.d.ts sitting beside foo.js, silently dropping every edge foo.js contributed and leaving
+ * its own dependencies looking orphaned. A declaration now wins only when no implementation
+ * sits beside it.
+ */
 export const RESOLUTION_EXTENSIONS: readonly string[] = [
   '.ts',
   '.tsx',
   '.mts',
   '.cts',
-  '.d.ts',
   '.js',
   '.jsx',
   '.mjs',
   '.cjs',
+  '.d.ts',
   '.vue',
   '.svelte',
   '.astro',

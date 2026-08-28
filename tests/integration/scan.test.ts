@@ -169,6 +169,19 @@ describe('end-to-end scan', () => {
     expect(limitations).toMatch(/\.css/);
   });
 
+  it('reports retained ignored files as unavailable for analysis', async () => {
+    project = store.projects.createOrTouch(
+      'ignore-precedence-project',
+      fixture('ignore-precedence-project'),
+    );
+
+    const result = await scan();
+    const stats = new AnalysisService(store).dashboardStats(project);
+
+    expect(result.summary).toMatchObject({ ignoredFiles: 1, unavailableFiles: 1 });
+    expect(stats).toMatchObject({ ignoredFiles: 1, unavailableFiles: 1 });
+  });
+
   it('explains a zero-file scan with the inspected folder and omitted extensions', async () => {
     project = store.projects.createOrTouch('asset-only-project', fixture('asset-only-project'));
 
@@ -334,6 +347,72 @@ describe('incremental rescan', () => {
       expect(store.scans.findById(first.id)).toBeNull();
     } finally {
       await fs.rm(temporaryAsset, { force: true });
+    }
+  });
+
+  it('keeps completed inventory authoritative when a later scan is cancelled', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const completed = await scan();
+    const completedInventory = store.projectFiles
+      .listByProject(project.id)
+      .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId }));
+    const cancelledOnlyAsset = join(project.rootPath, 'cancelled-only.txt');
+    await fs.writeFile(cancelledOnlyAsset, 'must not become authoritative\n');
+    const signal = { cancelled: false };
+
+    try {
+      await expect(
+        runScan(store, {
+          project: store.projects.findById(project.id) as Project,
+          fullRescan: false,
+          signal,
+          onProgress: (progress) => {
+            if (progress.phase === 'parsing') signal.cancelled = true;
+          },
+        }),
+      ).rejects.toThrow(/cancelled/i);
+
+      expect(store.scans.latestCompletedForProject(project.id)?.id).toBe(completed.id);
+      expect(
+        store.projectFiles
+          .listByProject(project.id)
+          .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId })),
+      ).toEqual(completedInventory);
+      expect(store.projectFiles.findByPath(project.id, 'cancelled-only.txt')).toBeNull();
+    } finally {
+      await fs.rm(cancelledOnlyAsset, { force: true });
+    }
+  });
+
+  it('rolls back inventory when final scan publication throws', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const completed = await scan();
+    const completedInventory = store.projectFiles
+      .listByProject(project.id)
+      .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId }));
+    const failedOnlyAsset = join(project.rootPath, 'failed-only.txt');
+    await fs.writeFile(failedOnlyAsset, 'must roll back with final publication\n');
+
+    try {
+      await expect(
+        runScan(store, {
+          project: store.projects.findById(project.id) as Project,
+          fullRescan: false,
+          onProgress: (progress) => {
+            if (progress.phase === 'done') throw new Error('progress publication failed');
+          },
+        }),
+      ).rejects.toThrow(/progress publication failed/i);
+
+      expect(store.scans.latestCompletedForProject(project.id)?.id).toBe(completed.id);
+      expect(
+        store.projectFiles
+          .listByProject(project.id)
+          .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId })),
+      ).toEqual(completedInventory);
+      expect(store.projectFiles.findByPath(project.id, 'failed-only.txt')).toBeNull();
+    } finally {
+      await fs.rm(failedOnlyAsset, { force: true });
     }
   });
 });

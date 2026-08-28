@@ -305,14 +305,10 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       analysisStatus: entry.analysisStatus,
       analysisReason: entry.analysisReason,
     }));
-    store.projectFiles.upsertMany(inventoryUpserts);
-
     const inventoryPaths = new Set(discovery.inventory.map((entry) => entry.relativePath));
-    store.projectFiles.removeByIds(
-      storedInventory
-        .filter((entry) => !inventoryPaths.has(entry.relativePath))
-        .map((entry) => entry.id),
-    );
+    const removedInventoryIds = storedInventory
+      .filter((entry) => !inventoryPaths.has(entry.relativePath))
+      .map((entry) => entry.id);
 
     limitations.push(...discoveryLimitations(project.rootPath, discovery));
 
@@ -328,7 +324,20 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
     }
 
     const tsConfig = loadProjectTsConfig(project.rootPath);
-    const tsConfigs = discoverProjectTsConfigs(project.rootPath);
+    const tsConfigDiscovery = discoverProjectTsConfigs(project.rootPath);
+    const tsConfigs = tsConfigDiscovery.configs;
+    if (tsConfigDiscovery.truncated) {
+      limitations.push(
+        `Import resolution loaded the first ${tsConfigs.length} compiler configurations; ` +
+          `${tsConfigDiscovery.omittedCount} additional configuration(s) were omitted.`,
+      );
+    }
+    if (tsConfigDiscovery.depthLimited) {
+      limitations.push(
+        `Compiler configuration discovery stopped at directory depth ` +
+          `${tsConfigDiscovery.maxDepth}; deeper configurations may have been omitted.`,
+      );
+    }
     if (tsConfig.configPath === null && tsConfigs.length > 0) {
       limitations.push(
         `No compiler configuration was found at the project root. Import resolution loaded ` +
@@ -809,51 +818,63 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
     store.findings.replaceForScan(project.id, scan.id, ANALYSED_FINDING_TYPES, findings);
 
     // --- Complete ---
-    const inventoryCounts = store.projectFiles.countsByCapability(project.id);
-    const graphEligibleFiles = store.files.countByProject(project.id);
-    const unavailableFiles =
-      inventoryCounts.excluded +
-      inventoryCounts.oversize +
-      inventoryCounts.unreadable +
-      inventoryCounts.symlink;
-    const summary: ScanSummary = {
-      totalFiles: discovered.length,
-      inventoryFiles: inventoryCounts.total,
-      graphEligibleFiles,
-      textOnlyFiles: inventoryCounts.textOnly,
-      binaryFiles: inventoryCounts.binary,
-      ignoredFiles: inventoryCounts.gitIgnored,
-      unavailableFiles,
-      parsedFiles: changed.length,
-      skippedUnchangedFiles: unchanged.length,
-      removedFiles,
-      totalSymbols: store.symbols.countByProject(project.id),
-      totalEdges: store.edges.countByProject(project.id),
-      unresolvedImports: actionableUnresolved.length,
-      dynamicImports: graph.unresolved.filter((r) => r.reason === 'dynamic-expression').length,
-      externalDependencies: externalDependencies.size,
-      cycles: cycles.length,
-      unusedExportCandidates: unusedCandidates.length,
-      architectureViolations: violations.length,
-      typeCheck: typeCheckSummary,
-      durationMs: Date.now() - startedAt,
-      limitations: [...new Set(limitations)].slice(0, 500),
-    };
+    checkCancelled();
+    const completed = store.transaction(() => {
+      store.projectFiles.upsertMany(inventoryUpserts);
+      store.projectFiles.removeByIds(removedInventoryIds);
 
-    const completed = store.scans.complete(scan.id, {
-      status: 'completed',
-      totalFiles: discovered.length,
-      parsedFiles: changed.length,
-      errorCount,
-      summary,
+      const inventoryCounts = store.projectFiles.countsByCapability(project.id);
+      const graphEligibleFiles = store.files.countByProject(project.id);
+      const unavailableFiles =
+        inventoryCounts.excluded +
+        inventoryCounts.oversize +
+        inventoryCounts.unreadable +
+        inventoryCounts.symlink;
+      const summary: ScanSummary = {
+        totalFiles: discovered.length,
+        inventoryFiles: inventoryCounts.total,
+        graphEligibleFiles,
+        textOnlyFiles: inventoryCounts.textOnly,
+        binaryFiles: inventoryCounts.binary,
+        ignoredFiles: inventoryCounts.gitIgnored,
+        unavailableFiles,
+        parsedFiles: changed.length,
+        skippedUnchangedFiles: unchanged.length,
+        removedFiles,
+        totalSymbols: store.symbols.countByProject(project.id),
+        totalEdges: store.edges.countByProject(project.id),
+        unresolvedImports: actionableUnresolved.length,
+        dynamicImports: graph.unresolved.filter((r) => r.reason === 'dynamic-expression').length,
+        externalDependencies: externalDependencies.size,
+        cycles: cycles.length,
+        unusedExportCandidates: unusedCandidates.length,
+        architectureViolations: violations.length,
+        typeCheck: typeCheckSummary,
+        durationMs: Date.now() - startedAt,
+        limitations: [...new Set(limitations)].slice(0, 500),
+      };
+
+      const completedScan = store.scans.complete(scan.id, {
+        status: 'completed',
+        totalFiles: discovered.length,
+        parsedFiles: changed.length,
+        errorCount,
+        summary,
+      });
+
+      store.projects.markScanned(project.id, new Date().toISOString());
+      store.scans.pruneOlderScans(project.id, scan.id);
+      if (!completedScan) throw new Error('Completed scan could not be read back.');
+      report({
+        phase: 'done',
+        processed: discovered.length,
+        total: discovered.length,
+        message: 'Scan complete.',
+      });
+      return completedScan;
     });
 
-    store.projects.markScanned(project.id, new Date().toISOString());
-    store.scans.pruneOlderScans(project.id, scan.id);
-
-    report({ phase: 'done', processed: discovered.length, total: discovered.length, message: 'Scan complete.' });
-
-    return completed as Scan;
+    return completed;
   } catch (error) {
     if (error instanceof ScanCancelledError) {
       store.scans.complete(scan.id, {

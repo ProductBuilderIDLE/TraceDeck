@@ -256,4 +256,43 @@ describe('parser resilience', () => {
     ]);
     expect(limitations?.join(' ')).toMatch(/script.*only|template.*not.*analysed/i);
   });
+
+  it('does not execute script examples inside markup comments', () => {
+    const result = parse(
+      'Example.vue',
+      [
+        '<template>',
+        '  <!-- <script>',
+        `  import { fake } from './commented';`,
+        '  export const fakeSymbol = fake;',
+        '  </script> -->',
+        '</template>',
+      ].join('\n'),
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+  });
+
+  it('reports external script blocks without treating their fallback body as analysed', () => {
+    const result = parse(
+      'External.vue',
+      `<script src="./external.ts">import './fallback'; export const fallback = true;</script>`,
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+    expect(result.limitations.join(' ')).toMatch(/external.*\.\/external\.ts.*not analysed/i);
+  });
+
+  it('reports unsupported script languages without parsing them as JavaScript', () => {
+    const result = parse(
+      'Legacy.svelte',
+      `<script lang="coffee">import './coffee-only'; export value = 1</script>`,
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+    expect(result.limitations.join(' ')).toMatch(/unsupported.*coffee.*not analysed/i);
+  });
 });

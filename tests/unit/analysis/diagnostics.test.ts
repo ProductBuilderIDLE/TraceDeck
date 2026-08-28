@@ -1,10 +1,28 @@
-import { basename, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { discoverTsConfigs, runTypeScriptDiagnostics } from '@main/analysis/diagnostics';
 import { NO_TSCONFIG, loadProjectTsConfig } from '@main/analysis/tsconfig';
 
 const BROKEN_ROOT = resolve(__dirname, '../../fixtures/type-errors-project');
 const CLEAN_ROOT = resolve(__dirname, '../../fixtures/sample-project');
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+async function workspaceWithConfigs(count: number): Promise<string> {
+  const root = await fs.mkdtemp(join(tmpdir(), 'tracedeck-configs-'));
+  temporaryRoots.push(root);
+  for (let index = count - 1; index >= 0; index -= 1) {
+    const directory = join(root, `package-${String(index).padStart(2, '0')}`);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(join(directory, 'tsconfig.json'), '{}\n');
+  }
+  return root;
+}
 
 function check(rootPath: string, overrides: Partial<Parameters<typeof runTypeScriptDiagnostics>[0]> = {}) {
   return runTypeScriptDiagnostics({
@@ -17,13 +35,42 @@ function check(rootPath: string, overrides: Partial<Parameters<typeof runTypeScr
 
 describe('discoverTsConfigs', () => {
   it('finds a configuration at the root of a project', () => {
-    expect(discoverTsConfigs(BROKEN_ROOT).map((path) => basename(path))).toContain('tsconfig.json');
+    expect(discoverTsConfigs(BROKEN_ROOT).configPaths.map((path) => basename(path))).toContain(
+      'tsconfig.json',
+    );
   });
 
   it('never descends into excluded directories', () => {
-    for (const path of discoverTsConfigs(CLEAN_ROOT)) {
+    for (const path of discoverTsConfigs(CLEAN_ROOT).configPaths) {
       expect(path).not.toContain('node_modules');
     }
+  });
+
+  it('selects the first twelve sorted configs and reports the omitted count', async () => {
+    const root = await workspaceWithConfigs(14);
+    const discovery = discoverTsConfigs(root);
+
+    expect(discovery.configPaths.map((path) => basename(resolve(path, '..')))).toEqual(
+      Array.from({ length: 12 }, (_, index) => `package-${String(index).padStart(2, '0')}`),
+    );
+    expect(discovery).toMatchObject({ truncated: true, omittedCount: 2 });
+  });
+
+  it('distinguishes an exact twelve configs from a truncated result', async () => {
+    const root = await workspaceWithConfigs(12);
+    const discovery = discoverTsConfigs(root);
+
+    expect(discovery).toMatchObject({ truncated: false, omittedCount: 0 });
+  });
+
+  it('reports when the configured traversal depth can omit nested configs', async () => {
+    const root = await workspaceWithConfigs(0);
+    await fs.mkdir(join(root, 'one', 'two', 'three'), { recursive: true });
+    await fs.writeFile(join(root, 'one', 'two', 'three', 'tsconfig.json'), '{}\n');
+    const discovery = discoverTsConfigs(root, 1);
+
+    expect(discovery.configPaths).toEqual([]);
+    expect(discovery.depthLimited).toBe(true);
   });
 });
 
@@ -95,6 +142,18 @@ describe('runTypeScriptDiagnostics', () => {
 
   it('reports which configurations it checked', () => {
     expect(check(BROKEN_ROOT).configsChecked).toEqual(['tsconfig.json']);
+  });
+
+  it('reports config truncation only when configurations were actually omitted', async () => {
+    const exactRoot = await workspaceWithConfigs(12);
+    const truncatedRoot = await workspaceWithConfigs(13);
+
+    expect(check(exactRoot, { tsConfig: NO_TSCONFIG }).limitations.join(' ')).not.toMatch(
+      /only the first 12/i,
+    );
+    expect(check(truncatedRoot, { tsConfig: NO_TSCONFIG }).limitations.join(' ')).toMatch(
+      /only the first 12.*1 additional/i,
+    );
   });
 
   it('stops early when the scan is cancelled', () => {

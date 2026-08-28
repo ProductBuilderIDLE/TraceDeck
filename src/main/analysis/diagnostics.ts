@@ -2,11 +2,7 @@ import { dirname, join, relative } from 'node:path';
 import ts from 'typescript';
 import { MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
-import {
-  discoverTsConfigs,
-  MAX_PROJECT_CONFIGS,
-  type ProjectTsConfig,
-} from './tsconfig';
+import { discoverTsConfigs, type ProjectTsConfig } from './tsconfig';
 
 export { discoverTsConfigs } from './tsconfig';
 
@@ -126,8 +122,8 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
   if (rootConfig) {
     configs.push(rootConfig);
   } else {
-    const discovered = discoverTsConfigs(rootPath);
-    for (const configPath of discovered) {
+    const discovery = discoverTsConfigs(rootPath);
+    for (const configPath of discovery.configPaths) {
       const parsed = parseConfig(configPath);
       if (parsed) configs.push(parsed);
     }
@@ -138,9 +134,16 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
           'configurations found in the project was checked separately.',
       );
     }
-    if (discovered.length >= MAX_PROJECT_CONFIGS) {
+    if (discovery.truncated) {
       limitations.push(
-        `Only the first ${MAX_PROJECT_CONFIGS} compiler configurations were checked.`,
+        `Only the first ${discovery.configPaths.length} compiler configurations were checked; ` +
+          `${discovery.omittedCount} additional configuration(s) were omitted.`,
+      );
+    }
+    if (discovery.depthLimited) {
+      limitations.push(
+        `Compiler configuration discovery stopped at directory depth ${discovery.maxDepth}; ` +
+          'deeper configurations may have been omitted.',
       );
     }
   }

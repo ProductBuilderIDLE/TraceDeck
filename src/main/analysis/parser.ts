@@ -47,6 +47,16 @@ interface PreparedSource {
   limitations: string[];
 }
 
+interface ScriptExtraction {
+  regions: SourceRegion[];
+  limitations: string[];
+}
+
+interface ScriptAttribute {
+  present: boolean;
+  value: string | null;
+}
+
 const SOURCE_CONTAINER_EXTENSIONS = ['.vue', '.svelte', '.astro'] as const;
 
 function sourceContainerExtension(
@@ -66,22 +76,87 @@ export function sourceContainerLimitations(fileName: string): string[] {
   ];
 }
 
-function scriptRegions(contents: string): SourceRegion[] {
+function scriptAttribute(attributes: string, name: string): ScriptAttribute {
+  const match = new RegExp(
+    `(?:^|\\s)${name}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+)))?`,
+    'i',
+  ).exec(attributes);
+  return {
+    present: match !== null,
+    value: match ? (match[1] ?? match[2] ?? match[3] ?? null) : null,
+  };
+}
+
+function markupCommentRegions(contents: string): SourceRegion[] {
   const regions: SourceRegion[] = [];
-  const blocks = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+  for (const match of contents.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
+    if (match.index === undefined) continue;
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return regions;
+}
+
+function scriptRegions(contents: string): ScriptExtraction {
+  const regions: SourceRegion[] = [];
+  const limitations: string[] = [];
+  const comments = markupCommentRegions(contents);
+  const blocks = /<script\b([^>]*)>[\s\S]*?<\/script\s*>/gi;
 
   for (const match of contents.matchAll(blocks)) {
     if (match.index === undefined) continue;
+    const matchIndex = match.index;
+    if (comments.some((comment) => matchIndex >= comment.start && matchIndex < comment.end)) {
+      continue;
+    }
+
+    const attributes = match[1] ?? '';
+    const source = scriptAttribute(attributes, 'src');
+    if (source.present) {
+      limitations.push(
+        `External script block "${source.value ?? '(unspecified)'}" was not analysed; ` +
+          'source-container script references are not read automatically.',
+      );
+      continue;
+    }
+
+    const language = scriptAttribute(attributes, 'lang');
+    if (
+      language.present &&
+      !['js', 'javascript', 'ts', 'typescript'].includes((language.value ?? '').toLowerCase())
+    ) {
+      limitations.push(
+        `Script block with unsupported language "${language.value ?? '(unspecified)'}" was not analysed.`,
+      );
+      continue;
+    }
+
+    const type = scriptAttribute(attributes, 'type');
+    if (
+      type.present &&
+      ![
+        'module',
+        'text/javascript',
+        'application/javascript',
+        'text/typescript',
+        'application/typescript',
+      ].includes((type.value ?? '').toLowerCase())
+    ) {
+      limitations.push(
+        `Script block with unsupported type "${type.value ?? '(unspecified)'}" was not analysed.`,
+      );
+      continue;
+    }
+
     const openingEnd = match[0].indexOf('>');
     const closingStart = match[0].toLowerCase().lastIndexOf('</script');
     if (openingEnd < 0 || closingStart < openingEnd) continue;
     regions.push({
-      start: match.index + openingEnd + 1,
-      end: match.index + closingStart,
+      start: matchIndex + openingEnd + 1,
+      end: matchIndex + closingStart,
     });
   }
 
-  return regions;
+  return { regions, limitations };
 }
 
 function astroFrontmatterRegion(contents: string): SourceRegion | null {
@@ -111,7 +186,8 @@ function prepareSource(fileName: string, contents: string): PreparedSource {
   const extension = sourceContainerExtension(fileName);
   if (!extension) return { contents, limitations: [] };
 
-  const regions = scriptRegions(contents);
+  const extraction = scriptRegions(contents);
+  const regions = extraction.regions;
   if (extension === '.astro') {
     const frontmatter = astroFrontmatterRegion(contents);
     if (frontmatter) regions.unshift(frontmatter);
@@ -119,7 +195,7 @@ function prepareSource(fileName: string, contents: string): PreparedSource {
 
   return {
     contents: maskOutsideRegions(contents, regions),
-    limitations: sourceContainerLimitations(fileName),
+    limitations: [...sourceContainerLimitations(fileName), ...extraction.limitations],
   };
 }
 

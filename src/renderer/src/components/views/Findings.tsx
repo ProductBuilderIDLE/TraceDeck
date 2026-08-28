@@ -9,6 +9,8 @@ import type {
   TypeErrorDetails,
   UnresolvedImportDetails,
   UnusedExportDetails,
+  SyntaxErrorDetails,
+  MergeConflictDetails,
 } from '@shared/types';
 import { fileNodeId, symbolNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
@@ -176,6 +178,56 @@ function TypeErrorBody({ finding }: { finding: Finding }): JSX.Element {
   );
 }
 
+function SyntaxErrorBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details as SyntaxErrorDetails;
+  const openCode = useUiStore((state) => state.openCode);
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => openCode(details.filePath, details.line)}
+        className="flex items-baseline gap-2 text-left hover:text-brand"
+      >
+        <PathLabel path={details.filePath} />
+        <span className="font-mono text-[10px] text-ink-faint">
+          :{details.line}:{details.column}
+        </span>
+      </button>
+      <p className="text-[11px] leading-relaxed text-ink-muted">{details.message}</p>
+    </div>
+  );
+}
+
+function MergeConflictBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details as MergeConflictDetails;
+  const openCode = useUiStore((state) => state.openCode);
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => openCode(details.filePath, details.startLine)}
+        className="flex items-baseline gap-2 text-left hover:text-brand"
+      >
+        <PathLabel path={details.filePath} />
+        <span className="font-mono text-[10px] text-ink-faint">
+          :{details.startLine}
+          {details.endLine !== null ? `-${details.endLine}` : ''}
+        </span>
+      </button>
+      {details.label && (
+        <p className="mono-path text-ink-muted">Conflicting side: {details.label}</p>
+      )}
+      {!details.complete && (
+        <Caveat>
+          This marker group is not properly closed, so the file is still mid-merge.
+        </Caveat>
+      )}
+    </div>
+  );
+}
+
 function FindingBody({ finding }: { finding: Finding }): JSX.Element {
   switch (finding.findingType) {
     case 'circular-dependency':
@@ -188,6 +240,10 @@ function FindingBody({ finding }: { finding: Finding }): JSX.Element {
       return <UnresolvedBody finding={finding} />;
     case 'type-error':
       return <TypeErrorBody finding={finding} />;
+    case 'syntax-error':
+      return <SyntaxErrorBody finding={finding} />;
+    case 'merge-conflict':
+      return <MergeConflictBody finding={finding} />;
   }
 }
 
@@ -373,6 +429,30 @@ export function UnresolvedImportsView(): JSX.Element {
       description="Imports this scan could not follow to a file. Each one is a gap in the graph, so dependency and blast-radius results involving these files may be incomplete."
       emptyTitle="Every import resolved"
       emptyDescription="All import specifiers in this project resolved to a file or a known external package."
+    />
+  );
+}
+
+export function SyntaxErrorsView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="syntax-error"
+      title="Syntax errors"
+      description="Files the parser could not read as valid syntax. Reported for every inventoried text file, not only dependency-graph sources."
+      emptyTitle="No syntax errors"
+      emptyDescription="Every parsed file in this project is syntactically valid."
+    />
+  );
+}
+
+export function MergeConflictsView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="merge-conflict"
+      title="Merge conflicts"
+      description="Unresolved Git conflict markers left in project files."
+      emptyTitle="No merge conflicts"
+      emptyDescription="No file in this project contains unresolved conflict markers."
     />
   );
 }

@@ -91,6 +91,8 @@ export class AnalysisService {
       ),
       unresolvedImportCount: this.store.findings.countByType(projectId, 'unresolved-import'),
       typeErrorCount: this.store.findings.countByType(projectId, 'type-error'),
+      syntaxErrorCount: this.store.findings.countByType(projectId, 'syntax-error'),
+      mergeConflictCount: this.store.findings.countByType(projectId, 'merge-conflict'),
       topImpactFiles,
     };
   }

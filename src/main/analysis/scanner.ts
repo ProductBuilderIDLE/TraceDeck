@@ -9,6 +9,7 @@ import type {
   ScanSummary,
   SymbolKind,
 } from '@shared/types';
+import { MAX_SOURCE_BYTES } from '@shared/constants';
 import { fileNodeId } from '@shared/nodeIds';
 import { DEPENDENCY_EDGE_TYPES, GraphIndex } from './algorithms/graphIndex';
 import { detectCycles } from './algorithms/cycles';
@@ -35,6 +36,8 @@ import {
 import { buildKnownFileIndex, type ResolverContext } from './resolver';
 import { packageNameOf, readProjectManifests } from './packageManifest';
 import { runTypeScriptDiagnostics } from './diagnostics';
+import { diagnoseJson, findMergeConflicts, isJsonPath } from './textDiagnostics';
+import { decodeText, detectEncoding, isDecodableText } from '../services/fileClassificationService';
 import { discoverProjectTsConfigs, loadProjectTsConfig } from './tsconfig';
 import type { DataStore } from '../db';
 import type { EdgeInsertInput } from '../db/repositories/edgeRepository';
@@ -67,6 +70,8 @@ const ANALYSED_FINDING_TYPES: FindingType[] = [
   'architecture-violation',
   'unresolved-import',
   'type-error',
+  'syntax-error',
+  'merge-conflict',
 ];
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
@@ -820,6 +825,78 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
           diagnostic.message,
         ),
       });
+    }
+
+    // --- Syntax and merge-conflict findings over decodable inventory text ---
+    //
+    // This runs over the inventory rather than the graph subset, so a broken JSON config or a
+    // half-merged stylesheet is reported even though neither is a dependency-graph node.
+    for (const entry of discovery.inventory) {
+      checkCancelled();
+      if (entry.contentKind !== 'text' || entry.entryKind !== 'regular') continue;
+      if (entry.sizeBytes > MAX_SOURCE_BYTES) continue;
+
+      let text: string;
+      try {
+        const bytes = await fs.readFile(entry.absolutePath);
+        const encoding = detectEncoding(bytes);
+        if (!isDecodableText(bytes, encoding)) continue;
+        text = decodeText(bytes, encoding);
+      } catch {
+        continue;
+      }
+
+      for (const conflict of findMergeConflicts(text)) {
+        findings.push({
+          projectId: project.id,
+          scanId: scan.id,
+          findingType: 'merge-conflict',
+          severity: 'high',
+          title: `Unresolved merge conflict in ${entry.relativePath}`,
+          description: conflict.complete
+            ? `A conflict block spans lines ${conflict.startLine}-${String(conflict.endLine)}.`
+            : `A conflict marker on line ${conflict.startLine} is not properly closed.`,
+          relatedNodeIds: [fileNodeId(entry.relativePath)],
+          details: {
+            kind: 'merge-conflict',
+            filePath: entry.relativePath,
+            startLine: conflict.startLine,
+            endLine: conflict.endLine,
+            complete: conflict.complete,
+            label: conflict.label,
+          },
+          // Keyed on the file and the marker label rather than the line, so an edit above the
+          // conflict does not resurrect a finding the user already dismissed.
+          fingerprint: fingerprint('merge-conflict', entry.relativePath, conflict.label),
+        });
+      }
+
+      if (!isJsonPath(entry.relativePath)) continue;
+      for (const diagnostic of diagnoseJson(entry.relativePath, text)) {
+        findings.push({
+          projectId: project.id,
+          scanId: scan.id,
+          findingType: 'syntax-error',
+          severity: 'high',
+          title: `Invalid JSON in ${entry.relativePath}`,
+          description: `${diagnostic.message} (line ${diagnostic.line}, column ${diagnostic.column})`,
+          relatedNodeIds: [fileNodeId(entry.relativePath)],
+          details: {
+            kind: 'syntax-error',
+            filePath: entry.relativePath,
+            line: diagnostic.line,
+            column: diagnostic.column,
+            code: diagnostic.code,
+            message: diagnostic.message,
+          },
+          fingerprint: fingerprint(
+            'syntax-error',
+            entry.relativePath,
+            diagnostic.code,
+            diagnostic.message,
+          ),
+        });
+      }
     }
 
     store.findings.replaceForScan(project.id, scan.id, ANALYSED_FINDING_TYPES, findings);

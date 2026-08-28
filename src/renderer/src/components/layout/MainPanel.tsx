@@ -13,6 +13,8 @@ const VIEW_TITLES: Record<ViewId, string> = {
   architecture: 'Architecture rules',
   unresolved: 'Unresolved imports',
   'type-errors': 'Type errors',
+  'syntax-errors': 'Syntax errors',
+  'merge-conflicts': 'Merge conflicts',
   reports: 'Reports',
   settings: 'Settings',
 };
@@ -26,6 +28,8 @@ const CODE_CAPABLE: ReadonlySet<ViewId> = new Set<ViewId>([
   'architecture',
   'unresolved',
   'type-errors',
+  'syntax-errors',
+  'merge-conflicts',
 ]);
 
 export function MainPanel({ children }: { children: React.ReactNode }): JSX.Element {

@@ -12,6 +12,8 @@ export type ViewId =
   | 'architecture'
   | 'unresolved'
   | 'type-errors'
+  | 'syntax-errors'
+  | 'merge-conflicts'
   | 'reports'
   | 'settings';
 

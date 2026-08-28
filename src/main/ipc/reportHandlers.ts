@@ -36,6 +36,8 @@ const FINDING_TYPES: readonly FindingType[] = [
   'architecture-violation',
   'unresolved-import',
   'type-error',
+  'syntax-error',
+  'merge-conflict',
 ];
 
 function parseScope(raw: unknown): ReportScope {

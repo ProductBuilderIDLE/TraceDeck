@@ -11,6 +11,8 @@ import {
   TypeErrorsView,
   UnresolvedImportsView,
   UnusedExportsView,
+  SyntaxErrorsView,
+  MergeConflictsView,
 } from './components/views/Findings';
 import { ArchitectureRulesView } from './components/views/ArchitectureRules';
 import { ReportsView } from './components/views/Reports';
@@ -29,6 +31,8 @@ const VIEWS: Record<ViewId, () => JSX.Element> = {
   architecture: ArchitectureRulesView,
   unresolved: UnresolvedImportsView,
   'type-errors': TypeErrorsView,
+  'syntax-errors': SyntaxErrorsView,
+  'merge-conflicts': MergeConflictsView,
   reports: ReportsView,
   settings: SettingsView,
 };

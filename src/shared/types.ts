@@ -35,7 +35,9 @@ export type FindingType =
   | 'unused-export-candidate'
   | 'architecture-violation'
   | 'unresolved-import'
-  | 'type-error';
+  | 'type-error'
+  | 'syntax-error'
+  | 'merge-conflict';
 
 export type Severity = 'info' | 'low' | 'medium' | 'high';
 
@@ -314,12 +316,34 @@ export interface Finding {
   dismissedAt: string | null;
 }
 
+export interface SyntaxErrorDetails {
+  kind: 'syntax-error';
+  filePath: string;
+  line: number;
+  column: number;
+  /** TypeScript diagnostic code, or 0 for a strict-JSON failure with no compiler code. */
+  code: number;
+  message: string;
+}
+
+export interface MergeConflictDetails {
+  kind: 'merge-conflict';
+  filePath: string;
+  startLine: number;
+  endLine: number | null;
+  /** False when the marker group is unterminated or missing its separator. */
+  complete: boolean;
+  label: string;
+}
+
 export type FindingDetails =
   | CycleDetails
   | UnusedExportDetails
   | ArchitectureViolationDetails
   | UnresolvedImportDetails
   | TypeErrorDetails
+  | SyntaxErrorDetails
+  | MergeConflictDetails
   | Record<string, never>;
 
 export interface TypeErrorDetails {
@@ -512,6 +536,8 @@ export interface DashboardStats {
   architectureViolationCount: number;
   unresolvedImportCount: number;
   typeErrorCount: number;
+  syntaxErrorCount: number;
+  mergeConflictCount: number;
   topImpactFiles: RiskScore[];
 }
 

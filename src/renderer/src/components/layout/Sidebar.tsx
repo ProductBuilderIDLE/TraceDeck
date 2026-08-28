@@ -13,6 +13,8 @@ import {
   Settings,
   ShieldAlert,
   TriangleAlert,
+  FileWarning,
+  GitMerge,
   Square,
   Unlink,
 } from 'lucide-react';
@@ -226,6 +228,18 @@ export function Sidebar(): JSX.Element {
       label: 'Type errors',
       icon: TriangleAlert,
       count: stats?.typeErrorCount,
+    },
+    {
+      id: 'syntax-errors',
+      label: 'Syntax errors',
+      icon: FileWarning,
+      count: stats?.syntaxErrorCount,
+    },
+    {
+      id: 'merge-conflicts',
+      label: 'Merge conflicts',
+      icon: GitMerge,
+      count: stats?.mergeConflictCount,
     },
   ];
 

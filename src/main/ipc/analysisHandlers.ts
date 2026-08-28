@@ -32,6 +32,8 @@ const FINDING_TYPES: readonly FindingType[] = [
   'architecture-violation',
   'unresolved-import',
   'type-error',
+  'syntax-error',
+  'merge-conflict',
 ];
 
 /** Rejects node ids that are not one of the three shapes the graph uses. */

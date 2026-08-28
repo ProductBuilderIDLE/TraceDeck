@@ -29,8 +29,11 @@
     "dist:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {
+    "@vscode/tree-sitter-wasm": "^0.3.1",
     "better-sqlite3": "^13.0.3",
-    "typescript": "^5.7.2"
+    "tree-sitter-html": "^0.23.2",
+    "typescript": "^5.7.2",
+    "web-tree-sitter": "^0.26.13"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
@@ -75,7 +78,10 @@
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
-      "**/node_modules/typescript/**"
+      "**/node_modules/typescript/**",
+      "**/node_modules/web-tree-sitter/**",
+      "**/node_modules/@vscode/tree-sitter-wasm/**",
+      "**/node_modules/tree-sitter-html/**"
     ],
     "npmRebuild": false,
     "win": {

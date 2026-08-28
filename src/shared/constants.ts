@@ -26,6 +26,13 @@ export const SOURCE_EXTENSIONS: readonly string[] = [
   '.vue',
   '.svelte',
   '.astro',
+  // Parsed by tree-sitter rather than the TypeScript compiler.
+  '.html',
+  '.htm',
+  '.css',
+  '.py',
+  '.go',
+  '.rs',
 ];
 
 /**
@@ -52,21 +59,27 @@ export const RESOLUTION_EXTENSIONS: readonly string[] = [
   '.vue',
   '.svelte',
   '.astro',
+  '.html',
+  '.htm',
+  '.css',
+  '.py',
+  '.go',
+  '.rs',
 ];
 
 export const INDEX_BASENAMES: readonly string[] = ['index'];
 
 /**
- * Extensions a bundler lets you import that are not JavaScript or TypeScript source. They are
+ * Extensions a bundler lets you import that are not graph sources. They are
  * legitimate imports, so they must not be reported as missing files, but they are outside the
  * graph TraceDeck builds.
  */
 export const NON_SOURCE_IMPORT_EXTENSIONS: readonly string[] = [
-  '.css', '.scss', '.sass', '.less', '.styl',
+  '.scss', '.sass', '.less', '.styl',
   '.json', '.json5', '.yaml', '.yml', '.toml',
   '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.bmp',
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
-  '.md', '.mdx', '.txt', '.csv', '.xml', '.html',
+  '.md', '.mdx', '.txt', '.csv', '.xml',
   '.wasm', '.glsl', '.frag', '.vert', '.graphql', '.gql',
 ];
 

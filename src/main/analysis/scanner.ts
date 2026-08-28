@@ -37,6 +37,7 @@ import { buildKnownFileIndex, type ResolverContext } from './resolver';
 import { packageNameOf, readProjectManifests } from './packageManifest';
 import { runTypeScriptDiagnostics } from './diagnostics';
 import { diagnoseJson, findMergeConflicts, isJsonPath } from './textDiagnostics';
+import { parseWithTreeSitter } from './treeSitter';
 import { decodeText, detectEncoding, isDecodableText } from '../services/fileClassificationService';
 import { discoverProjectTsConfigs, loadProjectTsConfig } from './tsconfig';
 import type { DataStore } from '../db';
@@ -94,7 +95,8 @@ function discoveryLimitations(rootPath: string, result: DiscoveryResult): string
     limitations.push(
       `No supported source files were found under "${rootPath}" after considering ` +
         `${plural(diagnostics.filesConsidered, 'file')}. TraceDeck currently builds its ` +
-        'dependency graph from JavaScript, TypeScript, Vue, Svelte, and Astro source files.',
+        'dependency graph from JavaScript, TypeScript, Vue, Svelte, Astro, HTML, CSS, ' +
+        'Python, Go, and Rust source files.',
     );
   } else if (files.length === 1) {
     limitations.push(
@@ -458,10 +460,18 @@ export async function runScan(store: DataStore, options: ScanOptions): Promise<S
       const source = contents.get(file.relativePath) ?? '';
 
       try {
-        const parsed = parseSourceFile(file.absolutePath, source);
+        const parsed =
+          (await parseWithTreeSitter(file.relativePath, source)) ??
+          parseSourceFile(file.absolutePath, source);
         if (parsed.parseErrors.length > 0) {
           errorCount += parsed.parseErrors.length;
           limitations.push(...parsed.parseErrors.map((e) => `${file.relativePath}: ${e}`));
+        }
+        for (const limitation of parsed.limitations) {
+          const text = limitation.includes(file.relativePath)
+            ? limitation
+            : `${file.relativePath}: ${limitation}`;
+          if (!limitations.includes(text)) limitations.push(text);
         }
         toBuild.push({
           relativePath: file.relativePath,

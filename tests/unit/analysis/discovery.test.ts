@@ -88,12 +88,24 @@ describe('discoverFiles', () => {
       }
     ).diagnostics;
 
-    expect(result.files.map((file) => file.relativePath)).toEqual(['app.js']);
+    // HTML and CSS are graph sources now that tree-sitter parses them, so this fixture
+    // yields three rather than one. The inventory total is unchanged.
+    expect(result.files.map((file) => file.relativePath)).toEqual([
+      'app.js',
+      'index.html',
+      'style.css',
+    ]);
     expect(diagnostics).toBeDefined();
     expect(diagnostics?.exclusions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ relativePath: 'index.html', detail: '.html' }),
-        expect.objectContaining({ relativePath: 'style.css', detail: '.css' }),
+        expect.objectContaining({ relativePath: 'package.json', detail: '.json' }),
+        expect.objectContaining({ relativePath: 'README.md', detail: '.md' }),
+      ]),
+    );
+    expect(diagnostics?.exclusions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ relativePath: 'index.html' }),
+        expect.objectContaining({ relativePath: 'style.css' }),
       ]),
     );
   });
@@ -109,13 +121,19 @@ describe('discoverFiles', () => {
       'README.md',
       'style.css',
     ]);
-    expect(result.files.map((file) => file.relativePath)).toEqual(['app.js']);
+    // HTML and CSS are graph sources now that tree-sitter parses them, so this fixture
+    // yields three rather than one. The inventory total is unchanged.
+    expect(result.files.map((file) => file.relativePath)).toEqual([
+      'app.js',
+      'index.html',
+      'style.css',
+    ]);
     expect(result.inventory.find((entry) => entry.relativePath === 'index.html')).toEqual(
       expect.objectContaining({
         entryKind: 'regular',
         contentKind: 'text',
         encoding: 'utf-8',
-        analysisStatus: 'text-only',
+        analysisStatus: 'eligible',
         isGitIgnored: false,
         isUserExcluded: false,
       }),

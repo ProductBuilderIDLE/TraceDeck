@@ -146,27 +146,40 @@ describe('end-to-end scan', () => {
       'package.json',
       'style.css',
     ]);
-    expect(store.files.countByProject(project.id)).toBe(1);
-    expect(result.summary?.totalFiles).toBe(1);
+    // app.js, index.html and style.css are all graph sources now.
+    expect(store.files.countByProject(project.id)).toBe(3);
+    expect(result.summary?.totalFiles).toBe(3);
     expect(result.summary).toMatchObject({
       inventoryFiles: 6,
-      graphEligibleFiles: 1,
-      textOnlyFiles: 5,
+      graphEligibleFiles: 3,
+      textOnlyFiles: 3,
       binaryFiles: 0,
       ignoredFiles: 0,
       unavailableFiles: 0,
     });
     expect(stats).toMatchObject({
       totalFiles: 6,
-      graphEligibleFiles: 1,
-      textOnlyFiles: 5,
+      graphEligibleFiles: 3,
+      textOnlyFiles: 3,
       binaryFiles: 0,
       ignoredFiles: 0,
       unavailableFiles: 0,
     });
-    expect(limitations).toMatch(/only 1 .*source file/i);
-    expect(limitations).toMatch(/\.html/);
-    expect(limitations).toMatch(/\.css/);
+    expect(limitations).toMatch(/included 3 source files/i);
+    expect(limitations).not.toMatch(/\.html/);
+    expect(limitations).not.toMatch(/\.css/);
+
+    const edges = store.edges.listByProject(project.id);
+    expect(
+      edges.some(
+        (edge) => edge.fromNodeId === 'file:index.html' && edge.toNodeId === 'file:style.css',
+      ),
+    ).toBe(true);
+    expect(
+      edges.some(
+        (edge) => edge.fromNodeId === 'file:index.html' && edge.toNodeId === 'file:app.js',
+      ),
+    ).toBe(true);
   });
 
   it('reports retained ignored files as unavailable for analysis', async () => {
@@ -183,17 +196,37 @@ describe('end-to-end scan', () => {
   });
 
   it('explains a zero-file scan with the inspected folder and omitted extensions', async () => {
-    project = store.projects.createOrTouch('asset-only-project', fixture('asset-only-project'));
+    // Uses a fixture with no parseable source at all. asset-only-project no longer qualifies
+    // now that HTML and CSS are parsed by tree-sitter, so repointing the test keeps the
+    // zero-source path covered rather than dropping the coverage.
+    project = store.projects.createOrTouch('no-source-project', fixture('no-source-project'));
 
     const result = await scan();
     const limitations = result.summary?.limitations.join(' ') ?? '';
 
     expect(result.summary?.totalFiles).toBe(0);
     expect(limitations).toMatch(/no .*source files/i);
-    expect(limitations).toMatch(/asset-only-project/i);
-    expect(limitations).toMatch(/\.html/);
-    expect(limitations).toMatch(/\.css/);
-    expect(limitations).toMatch(/JavaScript.*TypeScript.*Vue.*Svelte.*Astro/i);
+    expect(limitations).toMatch(/no-source-project/i);
+    expect(limitations).toMatch(/\.md/);
+    expect(limitations).toMatch(/\.txt/);
+    expect(limitations).toMatch(/JavaScript.*TypeScript.*Vue.*Svelte.*Astro.*HTML.*CSS.*Python.*Go.*Rust/i);
+  });
+
+  it('builds graph edges from tree-sitter languages the TypeScript compiler cannot parse', async () => {
+    project = store.projects.createOrTouch(
+      'mixed-language-project',
+      fixture('mixed-language-project'),
+    );
+
+    const result = await scan();
+    const edges = store.edges.listByProject(project.id);
+    const hasEdge = (from: string, to: string) =>
+      edges.some((edge) => edge.fromNodeId === `file:${from}` && edge.toNodeId === `file:${to}`);
+
+    expect(result.summary?.totalFiles).toBe(6);
+    expect(hasEdge('app.py', 'helper.py')).toBe(true);
+    expect(hasEdge('main.go', 'local/local.go')).toBe(true);
+    expect(hasEdge('src/lib.rs', 'src/foo.rs')).toBe(true);
   });
 
   it('discovers and resolves imports from Vue, Svelte, and Astro script regions', async () => {
@@ -341,7 +374,7 @@ describe('incremental rescan', () => {
       const second = await scan();
 
       expect(second.summary?.parsedFiles).toBe(0);
-      expect(second.summary?.skippedUnchangedFiles).toBe(1);
+      expect(second.summary?.skippedUnchangedFiles).toBe(3);
       expect(store.files.findByPath(project.id, 'app.js')?.id).toBe(graphFileId);
       expect(store.projectFiles.findByPath(project.id, 'temporary-notes.txt')).toBeNull();
       expect(store.projectFiles.listByProject(project.id)).toHaveLength(6);

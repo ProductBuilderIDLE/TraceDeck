@@ -1,5 +1,9 @@
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { NON_SOURCE_IMPORT_EXTENSIONS, RESOLUTION_EXTENSIONS } from '@shared/constants';
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  NON_SOURCE_IMPORT_EXTENSIONS,
+  RESOLUTION_EXTENSIONS,
+  SOURCE_EXTENSIONS,
+} from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
 import { expandAlias, type ProjectTsConfig } from './tsconfig';
 import { EMPTY_MANIFESTS, isNodeBuiltin, packageNameOf, type ProjectManifests } from './packageManifest';
@@ -11,11 +15,25 @@ export type UnresolvedReason =
   | 'external-package'
   | 'non-source-asset';
 
-/** True when the specifier explicitly names a file type outside the JS/TS graph. */
+/** True when the specifier explicitly names a file type outside the graph. */
 function isNonSourceAsset(specifier: string): boolean {
   const withoutQuery = specifier.split('?')[0] ?? specifier;
   const lower = withoutQuery.toLowerCase();
   return NON_SOURCE_IMPORT_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+/** True when the specifier names a graph-source file, even without a `./` prefix. */
+function hasSourceFileExtension(specifier: string): boolean {
+  const withoutQuery = specifier.split('?')[0] ?? specifier;
+  const lower = withoutQuery.toLowerCase();
+  return SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+function extraDirectoryIndexNames(fromAbsolutePath: string | undefined): readonly string[] {
+  const extension = extname(fromAbsolutePath ?? '').toLowerCase();
+  if (extension === '.py') return ['__init__'];
+  if (extension === '.rs') return ['mod'];
+  return [];
 }
 
 export type ResolutionResult =
@@ -48,8 +66,16 @@ function normalise(absolutePath: string): string {
 /**
  * Probes a base path for a real source file, mirroring how Node and TypeScript resolve:
  * the exact path, then each known extension, then an index file inside a directory.
+ *
+ * Python packages use `__init__.py` and Rust modules use `mod.rs`; those names are tried
+ * only when the importer is that language, so a JavaScript `./pkg` does not silently land
+ * on a Python package sitting beside it.
  */
-function probe(basePath: string, knownFiles: ReadonlySet<string>): string | null {
+function probe(
+  basePath: string,
+  knownFiles: ReadonlySet<string>,
+  fromAbsolutePath?: string,
+): string | null {
   const normalised = normalise(basePath);
 
   if (knownFiles.has(normalised)) return normalised;
@@ -76,6 +102,23 @@ function probe(basePath: string, knownFiles: ReadonlySet<string>): string | null
   for (const extension of RESOLUTION_EXTENSIONS) {
     const candidate = `${normalised}/index${extension}`;
     if (knownFiles.has(candidate)) return candidate;
+  }
+
+  for (const basename of extraDirectoryIndexNames(fromAbsolutePath)) {
+    for (const extension of RESOLUTION_EXTENSIONS) {
+      const candidate = `${normalised}/${basename}${extension}`;
+      if (knownFiles.has(candidate)) return candidate;
+    }
+  }
+
+  if (extname(fromAbsolutePath ?? '').toLowerCase() === '.go') {
+    const prefix = `${normalised}/`;
+    const hits = [...knownFiles]
+      .filter((file) => file.startsWith(prefix) && file.toLowerCase().endsWith('.go'))
+      .filter((file) => !file.slice(prefix.length).includes('/'))
+      .sort((left, right) => left.localeCompare(right));
+    const directoryName = normalised.slice(normalised.lastIndexOf('/') + 1);
+    return hits.find((file) => file === `${prefix}${directoryName}.go`) ?? hits[0] ?? null;
   }
 
   return null;
@@ -128,19 +171,19 @@ export function resolveImport(
     return { status: 'unresolved', reason: 'file-not-found', detail: 'Empty module specifier.' };
   }
 
-  // Checked before any probing: a stylesheet or image import is valid and expected, and
-  // calling it a missing file would be wrong.
+  // Checked before any probing: a stylesheet preprocessor or image import is valid and
+  // expected, and calling it a missing file would be wrong.
   if (isNonSourceAsset(trimmed)) {
     return {
       status: 'unresolved',
       reason: 'non-source-asset',
-      detail: `"${trimmed}" is not a JavaScript or TypeScript source file, so it is not part of the dependency graph.`,
+      detail: `"${trimmed}" is not a graph source file, so it is not part of the dependency graph.`,
     };
   }
 
   if (isRelativeSpecifier(trimmed)) {
     const base = resolve(dirname(fromAbsolutePath), trimmed);
-    const hit = probe(base, knownFiles);
+    const hit = probe(base, knownFiles, fromAbsolutePath);
     if (hit) return { status: 'resolved', absolutePath: hit, viaAlias: false };
     return {
       status: 'unresolved',
@@ -150,7 +193,7 @@ export function resolveImport(
   }
 
   if (isAbsolute(trimmed)) {
-    const hit = probe(trimmed, knownFiles);
+    const hit = probe(trimmed, knownFiles, fromAbsolutePath);
     if (hit) return { status: 'resolved', absolutePath: hit, viaAlias: false };
     return {
       status: 'unresolved',
@@ -159,9 +202,20 @@ export function resolveImport(
     };
   }
 
+  // HTML and CSS write `style.css` rather than `./style.css`. That is still a file path.
+  if (hasSourceFileExtension(trimmed)) {
+    const hit = probe(resolve(dirname(fromAbsolutePath), trimmed), knownFiles, fromAbsolutePath);
+    if (hit) return { status: 'resolved', absolutePath: hit, viaAlias: false };
+    return {
+      status: 'unresolved',
+      reason: 'file-not-found',
+      detail: `No file matching "${trimmed}" was found relative to this file.`,
+    };
+  }
+
   const aliasCandidates = expandAlias(trimmed, tsConfig);
   for (const candidate of aliasCandidates) {
-    const hit = probe(candidate, knownFiles);
+    const hit = probe(candidate, knownFiles, fromAbsolutePath);
     if (hit) return { status: 'resolved', absolutePath: hit, viaAlias: true };
   }
 
@@ -174,7 +228,7 @@ export function resolveImport(
   }
 
   if (tsConfig.baseUrl) {
-    const hit = probe(resolve(tsConfig.baseUrl, trimmed), knownFiles);
+    const hit = probe(resolve(tsConfig.baseUrl, trimmed), knownFiles, fromAbsolutePath);
     if (hit) return { status: 'resolved', absolutePath: hit, viaAlias: true };
   }
 

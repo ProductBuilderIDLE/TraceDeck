@@ -235,3 +235,85 @@ describe('declaration files never shadow an implementation', () => {
     expect(result.absolutePath.endsWith('only.d.ts')).toBe(true);
   });
 });
+
+describe('tree-sitter language resolution', () => {
+  it('resolves a Python relative import to a sibling module', () => {
+    const from = abs('src/app.py');
+    const helper = abs('src/helper.py');
+    const result = resolveImport('./helper', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, helper]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: helper });
+  });
+
+  it('resolves a Python package directory to __init__.py', () => {
+    const from = abs('src/app.py');
+    const init = abs('src/pkg/__init__.py');
+    const result = resolveImport('./pkg', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, init]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: init });
+  });
+
+  it('does not let a JavaScript import land on a Python package', () => {
+    const from = abs('src/app.ts');
+    const init = abs('src/pkg/__init__.py');
+    const result = resolveImport('./pkg', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, init]),
+    });
+
+    expect(result).toMatchObject({ reason: 'file-not-found' });
+  });
+
+  it('resolves a Go directory import to a .go file in that package', () => {
+    const from = abs('src/main.go');
+    const local = abs('src/local/local.go');
+    const result = resolveImport('./local', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, local]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: local });
+  });
+
+  it('resolves a Rust mod to foo.rs, then to foo/mod.rs', () => {
+    const from = abs('src/lib.rs');
+    const fileModule = abs('src/foo.rs');
+    const dirModule = abs('src/bar/mod.rs');
+    const known = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, fileModule, dirModule]),
+    };
+
+    expect(resolveImport('./foo', from, known)).toMatchObject({
+      status: 'resolved',
+      absolutePath: fileModule,
+    });
+    expect(resolveImport('./bar', from, known)).toMatchObject({
+      status: 'resolved',
+      absolutePath: dirModule,
+    });
+  });
+
+  it('resolves an HTML stylesheet href without a ./ prefix', () => {
+    const from = abs('index.html');
+    const css = abs('style.css');
+    const result = resolveImport('style.css', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, css]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: css });
+  });
+});

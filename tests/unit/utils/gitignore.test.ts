@@ -69,4 +69,25 @@ describe('GitignoreMatcher', () => {
   it('ignores nothing when it has no rules', () => {
     expect(new GitignoreMatcher([]).ignores('anything.ts')).toBe(false);
   });
+
+  it('reports whether a negation matched instead of looking like no matching rule', () => {
+    const rules = matcher('*.ts', '!keep.ts');
+
+    if (!('decision' in rules)) {
+      expect('decision' in rules).toBe(true);
+      return;
+    }
+
+    const decision = (
+      rules as GitignoreMatcher & {
+        decision(relativePath: string): {
+          matched: boolean;
+          ignored: boolean;
+          pattern: string | null;
+        };
+      }
+    ).decision('src/keep.ts');
+
+    expect(decision).toEqual({ matched: true, ignored: false, pattern: '!keep.ts' });
+  });
 });

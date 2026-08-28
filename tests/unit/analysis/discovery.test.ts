@@ -4,6 +4,10 @@ import { discoverFiles, folderSegments, isTestFile } from '@main/analysis/discov
 
 const FIXTURE_ROOT = resolve(__dirname, '../../fixtures/sample-project');
 
+function fixture(name: string): string {
+  return resolve(__dirname, `../../fixtures/${name}`);
+}
+
 async function discover(overrides: Partial<Parameters<typeof discoverFiles>[0]> = {}) {
   return discoverFiles({
     rootPath: FIXTURE_ROOT,
@@ -72,6 +76,100 @@ describe('discoverFiles', () => {
     const { files } = await discover();
 
     expect(files.every((f) => !f.relativePath.includes('node_modules'))).toBe(true);
+  });
+
+  it('reports the concrete extensions omitted from an asset-heavy project', async () => {
+    const result = await discover({ rootPath: fixture('asset-heavy-project') });
+    const diagnostics = (
+      result as typeof result & {
+        diagnostics?: {
+          exclusions: Array<{ relativePath: string; kind: string; detail: string }>;
+        };
+      }
+    ).diagnostics;
+
+    expect(result.files.map((file) => file.relativePath)).toEqual(['app.js']);
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics?.exclusions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ relativePath: 'index.html', detail: '.html' }),
+        expect.objectContaining({ relativePath: 'style.css', detail: '.css' }),
+      ]),
+    );
+  });
+
+  it('inventories every policy-visible asset while keeping files graph-source-only', async () => {
+    const result = await discover({ rootPath: fixture('asset-heavy-project') });
+
+    expect(result.inventory.map((entry) => entry.relativePath)).toEqual([
+      '.gitignore',
+      'app.js',
+      'index.html',
+      'package.json',
+      'README.md',
+      'style.css',
+    ]);
+    expect(result.files.map((file) => file.relativePath)).toEqual(['app.js']);
+    expect(result.inventory.find((entry) => entry.relativePath === 'index.html')).toEqual(
+      expect.objectContaining({
+        entryKind: 'regular',
+        contentKind: 'text',
+        encoding: 'utf-8',
+        analysisStatus: 'text-only',
+        isGitIgnored: false,
+        isUserExcluded: false,
+      }),
+    );
+  });
+
+  it('retains a gitignored source in inventory with the final matching rule', async () => {
+    const result = await discover({ rootPath: fixture('ignore-precedence-project') });
+    const ignoredSource = result.inventory.find(
+      (entry) => entry.relativePath === 'src/drop.ts',
+    );
+
+    expect(result.inventory.map((entry) => entry.relativePath)).toEqual([
+      '.gitignore',
+      'src/.gitignore',
+      'src/drop.ts',
+      'src/keep.ts',
+    ]);
+    expect(ignoredSource).toEqual(
+      expect.objectContaining({
+        isGitIgnored: true,
+        gitignoreRule: '.gitignore: *.ts',
+        analysisStatus: 'excluded',
+      }),
+    );
+    expect(result.files.map((file) => file.relativePath)).toEqual(['src/keep.ts']);
+  });
+
+  it('lets a child .gitignore negation override a parent file rule', async () => {
+    const result = await discover({ rootPath: fixture('ignore-precedence-project') });
+
+    expect(result.files.map((file) => file.relativePath)).toEqual(['src/keep.ts']);
+  });
+
+  it('returns identical discovery diagnostics across runs', async () => {
+    const first = await discover({ rootPath: fixture('asset-heavy-project') });
+    const second = await discover({ rootPath: fixture('asset-heavy-project') });
+    const firstDiagnostics = (first as typeof first & { diagnostics?: unknown }).diagnostics;
+    const secondDiagnostics = (second as typeof second & { diagnostics?: unknown }).diagnostics;
+
+    expect(firstDiagnostics).toBeDefined();
+    expect(secondDiagnostics).toEqual(firstDiagnostics);
+    expect(second.inventory).toEqual(first.inventory);
+  });
+
+  it('discovers Vue, Svelte, and Astro files that contain JavaScript or TypeScript', async () => {
+    const result = await discover({ rootPath: fixture('source-containers-project') });
+
+    expect(result.files.map((file) => file.relativePath)).toEqual([
+      'src/Page.astro',
+      'src/Panel.svelte',
+      'src/shared.ts',
+      'src/Widget.vue',
+    ]);
   });
 });
 

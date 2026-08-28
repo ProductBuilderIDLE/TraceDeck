@@ -11,6 +11,7 @@ import { toPosixPath } from './glob';
  */
 
 interface IgnoreRule {
+  rawPattern: string;
   regexp: RegExp;
   negated: boolean;
   directoryOnly: boolean;
@@ -72,6 +73,7 @@ function compilePattern(rawPattern: string): IgnoreRule | null {
   const head = anchored ? '' : '(?:.*/)?';
 
   return {
+    rawPattern,
     regexp: new RegExp(`^${head}${source}${tail}$`),
     negated,
     directoryOnly,
@@ -100,17 +102,36 @@ export class GitignoreMatcher {
    * The last matching rule wins, which is how a later `!pattern` re-includes a file.
    */
   ignores(relativePath: string): boolean {
+    return this.decision(relativePath).ignored;
+  }
+
+  /**
+   * Returns the final matching rule as well as its outcome.
+   *
+   * `matched` matters when several scoped .gitignore files are layered: a lower-level negation
+   * must be able to override a parent rule, while a lower-level file with no matching rule must
+   * leave the inherited decision alone.
+   */
+  decision(relativePath: string): {
+    matched: boolean;
+    ignored: boolean;
+    pattern: string | null;
+  } {
     const path = toPosixPath(relativePath);
+    let matched = false;
     let ignored = false;
+    let pattern: string | null = null;
 
     for (const rule of this.rules) {
       // A directory-only rule matches the directory itself and anything beneath it; the
       // compiled trailing segment already covers the "beneath it" case.
       if (!rule.regexp.test(path)) continue;
+      matched = true;
       ignored = !rule.negated;
+      pattern = rule.rawPattern;
     }
 
-    return ignored;
+    return { matched, ignored, pattern };
   }
 }
 

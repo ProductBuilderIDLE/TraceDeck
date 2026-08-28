@@ -23,6 +23,9 @@ export const SOURCE_EXTENSIONS: readonly string[] = [
   '.jsx',
   '.mjs',
   '.cjs',
+  '.vue',
+  '.svelte',
+  '.astro',
 ];
 
 /** Extension candidates appended to an extensionless import specifier, in resolution order. */
@@ -36,6 +39,9 @@ export const RESOLUTION_EXTENSIONS: readonly string[] = [
   '.jsx',
   '.mjs',
   '.cjs',
+  '.vue',
+  '.svelte',
+  '.astro',
 ];
 
 export const INDEX_BASENAMES: readonly string[] = ['index'];
@@ -52,7 +58,6 @@ export const NON_SOURCE_IMPORT_EXTENSIONS: readonly string[] = [
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
   '.md', '.mdx', '.txt', '.csv', '.xml', '.html',
   '.wasm', '.glsl', '.frag', '.vert', '.graphql', '.gql',
-  '.vue', '.svelte', '.astro',
 ];
 
 /** Files matching these are treated as tests and excluded from "unused export" pressure. */

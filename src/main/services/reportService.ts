@@ -117,7 +117,8 @@ export function renderMarkdown(bundle: ReportBundle): string {
     const stats = bundle.stats;
     lines.push('## Summary', '');
     lines.push('| Metric | Value |', '| --- | ---: |');
-    lines.push(`| Files scanned | ${stats.totalFiles} |`);
+    lines.push(`| Project files | ${stats.totalFiles} |`);
+    lines.push(`| Graph source files | ${stats.graphEligibleFiles} |`);
     lines.push(`| Symbols | ${stats.totalSymbols} |`);
     lines.push(`| Graph edges | ${stats.totalEdges} |`);
     lines.push(`| Circular dependencies | ${stats.cycleCount} |`);
@@ -257,6 +258,7 @@ export function renderJson(bundle: ReportBundle): string {
       scope: bundle.scope,
       summary: {
         totalFiles: bundle.stats.totalFiles,
+        graphEligibleFiles: bundle.stats.graphEligibleFiles,
         totalSymbols: bundle.stats.totalSymbols,
         totalEdges: bundle.stats.totalEdges,
         cycleCount: bundle.stats.cycleCount,
@@ -304,7 +306,8 @@ export function renderHtml(bundle: ReportBundle): string {
     parts.push(
       '<div class="grid">' +
         [
-          ['Files scanned', s.totalFiles],
+          ['Project files', s.totalFiles],
+          ['Graph source files', s.graphEligibleFiles],
           ['Symbols', s.totalSymbols],
           ['Graph edges', s.totalEdges],
           ['Circular dependencies', s.cycleCount],

@@ -124,7 +124,10 @@ export function Dashboard(): JSX.Element {
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
-        <StatTile label="Files scanned" value={stats.totalFiles} />
+        <StatTile label="Project files" value={stats.totalFiles} />
+        <StatTile label="Graph source files" value={stats.graphEligibleFiles} />
+        <StatTile label="Text only" value={summary?.textOnlyFiles ?? 0} />
+        <StatTile label="Binary" value={summary?.binaryFiles ?? 0} />
         <StatTile label="Symbols" value={stats.totalSymbols} />
         <StatTile label="Graph edges" value={stats.totalEdges} />
         <StatTile

@@ -151,6 +151,153 @@ export async function runGitStreaming(
   }
 }
 
+export type GitCatFileBatchOptions = Omit<GitProcessOptions, 'args' | 'maxStdoutBytes'>;
+
+export async function runGitCatFileBatch(
+  options: GitCatFileBatchOptions,
+  objectIds: readonly string[],
+  consumeStdout: (stdout: AsyncIterable<Buffer>) => Promise<void>,
+): Promise<void> {
+  if (options.signal?.aborted) throw cancelledError();
+  if (objectIds.some((objectId) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(objectId))) {
+    throw failedError('Git object input was invalid.');
+  }
+
+  let child: ChildProcessWithoutNullStreams;
+  const spawnOptions: GitSpawnOptions = {
+    cwd: options.cwd,
+    windowsHide: true,
+    shell: false,
+  };
+  try {
+    child = options.spawnFactory
+      ? options.spawnFactory('git', ['cat-file', '--batch'], spawnOptions)
+      : spawn('git', ['cat-file', '--batch'], spawnOptions);
+  } catch {
+    throw failedError();
+  }
+
+  const stderrLimit = Math.max(
+    0,
+    Math.min(options.maxStderrBytes ?? MAX_RETAINED_STDERR_BYTES, MAX_RETAINED_STDERR_BYTES),
+  );
+  const retainedStderr: Buffer[] = [];
+  let retainedStderrBytes = 0;
+  let settle: ((error?: GitReviewError) => void) | undefined;
+  const completion = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    settle = (error?: GitReviewError): void => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve();
+    };
+  });
+
+  let stopRequested = false;
+  let terminalControlError: GitReviewError | undefined;
+  const stopChild = (): void => {
+    if (stopRequested) return;
+    stopRequested = true;
+    try {
+      child.kill();
+    } catch {
+      // The operation already has a sanitized terminal error.
+    }
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+  };
+  const onAbort = (): void => {
+    terminalControlError = cancelledError();
+    settle?.(terminalControlError);
+    stopChild();
+  };
+  const onStderr = (value: Buffer | string): void => {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const remaining = stderrLimit - retainedStderrBytes;
+    if (remaining <= 0) return;
+    const retained = Buffer.from(chunk.subarray(0, remaining));
+    retainedStderr.push(retained);
+    retainedStderrBytes += retained.length;
+  };
+  const onError = (): void => settle?.(failedError());
+  const onClose = (exitCode: number | null): void => {
+    if (exitCode === 0) settle?.();
+    else settle?.(failedError());
+  };
+  const input = Buffer.from(objectIds.map((objectId) => `${objectId}\n`).join(''), 'ascii');
+  const inputCompletion = new Promise<void>((resolve, reject) => {
+    let finished = false;
+    const cleanup = (): void => {
+      child.stdin.off('error', onInputError);
+      child.stdin.off('close', onInputClose);
+    };
+    const onInputError = (): void => {
+      cleanup();
+      reject(failedError());
+    };
+    const onInputClose = (): void => {
+      if (finished) return;
+      cleanup();
+      reject(failedError());
+    };
+    child.stdin.once('error', onInputError);
+    child.stdin.once('close', onInputClose);
+    child.stdin.end(input, () => {
+      finished = true;
+      cleanup();
+      resolve();
+    });
+  });
+
+  child.stderr.on('data', onStderr);
+  child.once('error', onError);
+  child.once('close', onClose);
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => {
+    terminalControlError = timeoutError();
+    settle?.(terminalControlError);
+    stopChild();
+  }, options.timeoutMs);
+  const guardedInputCompletion = inputCompletion.catch((error: unknown) => {
+    const failure = error instanceof GitReviewError ? error : failedError();
+    settle?.(failure);
+    stopChild();
+    throw failure;
+  });
+  const consumerCompletion = Promise.resolve()
+    .then(() => consumeStdout(child.stdout as AsyncIterable<Buffer>))
+    .catch((error: unknown) => {
+      const failure = error instanceof GitReviewError
+        ? error
+        : failedError('Git command output could not be processed.');
+      settle?.(failure);
+      stopChild();
+      throw failure;
+    });
+
+  try {
+    const results = await Promise.allSettled([
+      completion,
+      guardedInputCompletion,
+      consumerCompletion,
+    ]);
+    const rejected = results.find((result) => result.status === 'rejected');
+    if (terminalControlError) throw terminalControlError;
+    if (rejected?.status === 'rejected') {
+      throw rejected.reason instanceof GitReviewError ? rejected.reason : failedError();
+    }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onAbort);
+    child.stderr.off('data', onStderr);
+    child.off('error', onError);
+    child.off('close', onClose);
+    retainedStderr.length = 0;
+  }
+}
+
 export async function runGitBuffered(options: GitProcessOptions): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let retainedBytes = 0;

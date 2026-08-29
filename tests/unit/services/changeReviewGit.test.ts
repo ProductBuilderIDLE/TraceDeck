@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GitReviewError,
   runGitBuffered,
+  runGitCatFileBatch,
   runGitNulRecords,
   type GitSpawnFactory,
 } from '@main/services/changeReview/gitProcess';
@@ -21,6 +22,8 @@ import {
 } from '@main/services/changeReview/gitStatus';
 
 const temporaryDirectories: string[] = [];
+const OID_A = 'a'.repeat(40);
+const OID_B = 'b'.repeat(40);
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix));
@@ -302,6 +305,102 @@ describe('Git process execution', () => {
     }, (record) => records.push(record.toString('utf8')));
 
     expect(records).toEqual(['first', 'second', 'third']);
+  });
+
+  it('runs one fixed cat-file batch with streamed stdin and stdout', async () => {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const stdinChunks: Buffer[] = [];
+    const spawnFactory = ((
+      command: string,
+      args: readonly string[],
+      options: Record<string, unknown>,
+    ) => {
+      calls.push({ command, args: [...args], options });
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      stdin.on('data', (chunk: Buffer) => stdinChunks.push(Buffer.from(chunk)));
+      stdin.once('finish', () => {
+        stdout.write(Buffer.from('response-a'));
+        stdout.end(Buffer.from('-response-b'));
+        stderr.end();
+        queueMicrotask(() => child.emit('close', 0, null));
+      });
+      Object.assign(child, { stdin, stdout, stderr, kill: vi.fn(() => true) });
+      return child;
+    }) as unknown as GitSpawnFactory;
+    const stdoutChunks: Buffer[] = [];
+
+    await runGitCatFileBatch({
+      cwd: 'C:\\project with spaces',
+      timeoutMs: 1000,
+      spawnFactory,
+    }, [OID_A, OID_B], async (stdout) => {
+      for await (const chunk of stdout) stdoutChunks.push(Buffer.from(chunk));
+    });
+
+    expect(calls).toEqual([{
+      command: 'git',
+      args: ['cat-file', '--batch'],
+      options: {
+        cwd: 'C:\\project with spaces',
+        shell: false,
+        windowsHide: true,
+      },
+    }]);
+    expect(Buffer.concat(stdinChunks).toString('ascii')).toBe(`${OID_A}\n${OID_B}\n`);
+    expect(Buffer.concat(stdoutChunks).toString()).toBe('response-a-response-b');
+  });
+
+  it('kills a cat-file batch on cancellation and waits for consumer cleanup', async () => {
+    const fake = fakeSpawn({ waitForKill: true });
+    const controller = new AbortController();
+    let releaseConsumer: (() => void) | undefined;
+    const consumerCleanup = new Promise<void>((resolve) => {
+      releaseConsumer = resolve;
+    });
+    let settled = false;
+    const operation = runGitCatFileBatch({
+      cwd: 'C:\\private\\project',
+      timeoutMs: 1000,
+      signal: controller.signal,
+      spawnFactory: fake.spawnFactory,
+    }, [OID_A], async () => {
+      await consumerCleanup;
+    });
+    void operation.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    controller.abort();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    releaseConsumer?.();
+
+    await expect(operation).rejects.toEqual(expect.objectContaining({
+      code: 'REVIEW_CANCELLED',
+      message: 'Git operation was cancelled.',
+    }));
+    expect(settled).toBe(true);
+    expect(fake.kills[0]).toHaveBeenCalledOnce();
+  });
+
+  it('kills a cat-file batch on timeout', async () => {
+    const fake = fakeSpawn({ waitForKill: true });
+
+    await expect(runGitCatFileBatch({
+      cwd: 'C:\\private\\project',
+      timeoutMs: 5,
+      spawnFactory: fake.spawnFactory,
+    }, [OID_A], async (stdout) => {
+      for await (const chunk of stdout) {
+        void chunk;
+        // The fake remains open until timeout.
+      }
+    })).rejects.toEqual(expect.objectContaining({ code: 'REVIEW_GIT_TIMEOUT' }));
+    expect(fake.kills[0]).toHaveBeenCalledOnce();
   });
 });
 

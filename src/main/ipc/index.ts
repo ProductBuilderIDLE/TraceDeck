@@ -1,6 +1,7 @@
 import { IPC_CHANNELS } from '@shared/ipc';
 import type { DataStore } from '../db';
 import { AnalysisService } from '../services/analysisService';
+import { ProjectOperationRegistry } from '../services/projectOperations';
 import { analysisHandlers } from './analysisHandlers';
 import { projectHandlers } from './projectHandlers';
 import { registerHandlers, registeredChannels } from './registry';
@@ -12,10 +13,11 @@ import { extraHandlers } from './extraHandlers';
 
 export function registerAllHandlers(store: DataStore, databasePath: () => string): void {
   const analysis = new AnalysisService(store);
+  const operations = new ProjectOperationRegistry();
 
   registerHandlers({
-    ...projectHandlers(store),
-    ...scanHandlers(store),
+    ...projectHandlers(store, operations),
+    ...scanHandlers(store, operations),
     ...analysisHandlers(store, analysis),
     ...ruleHandlers(store),
     ...reportHandlers(store, analysis),

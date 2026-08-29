@@ -503,18 +503,18 @@ export function Inspector(): JSX.Element {
                 {detail.maxComplexity !== null ? ` · max complexity ${detail.maxComplexity}` : ''}
                 {detail.maxLcom !== null ? ` · LCOM ${detail.maxLcom.toFixed(2)}` : ''}
               </p>
-              {detail.owners.length > 0 && (
+              {detail.owners?.length ? (
                 <p className="mt-1 text-[11px] text-ink-muted">Owners: {detail.owners.join(', ')}</p>
-              )}
-              {detail.entryPointsCovering.length > 0 && (
+              ) : null}
+              {detail.entryPointsCovering?.length ? (
                 <p className="mt-1 text-[11px] text-ink-muted">
                   Entry points covering this: {detail.entryPointsCovering.slice(0, 6).join(', ')}
                 </p>
-              )}
+              ) : null}
             </Section>
           )}
 
-          {detail && detail.testDependents.length > 0 && (
+          {detail && (detail.testDependents?.length ?? 0) > 0 && (
             <Section title="Tests that import this" count={detail.testDependents.length} defaultOpen={false}>
               <EntryList entries={detail.testDependents} emptyLabel="No test file imports this." />
             </Section>
@@ -570,7 +570,7 @@ export function Inspector(): JSX.Element {
             </>
           )}
 
-          {detail && detail.symbols.length > 0 && (
+          {detail && (detail.symbols?.length ?? 0) > 0 && (
             <Section title="Symbols" count={detail.symbols.length} defaultOpen={false}>
               <ul className="space-y-0.5">
                 {detail.symbols.map((symbol) => (

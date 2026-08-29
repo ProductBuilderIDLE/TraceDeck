@@ -49,7 +49,7 @@ const EDGE_FILTERS: Array<{ id: EdgeType; label: string }> = [
  * the same colour between sessions without anything being stored.
  */
 function folderOf(path: string): string {
-  const segments = path.split('/');
+  const segments = (path ?? '').split('/');
   if (segments.length <= 1) return '(root)';
   // Two levels for monorepo layouts like apps/web, one otherwise.
   if ((segments[0] === 'apps' || segments[0] === 'packages') && segments.length > 2) {
@@ -233,16 +233,18 @@ function layoutOptions(name: LayoutName, nodeCount: number): LayoutOptions {
 
 function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
   const degree = new Map<string, number>();
-  for (const edge of payload.edges) {
+  const graphEdges = payload.edges ?? [];
+  const graphNodes = payload.nodes ?? [];
+  for (const edge of graphEdges) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
 
-  const nodes: ElementDefinition[] = payload.nodes.map((node) => {
+  const nodes: ElementDefinition[] = graphNodes.map((node) => {
     const connections = degree.get(node.id) ?? 0;
     // Area grows with connectivity but is damped, so one hub cannot dwarf everything else.
     const size = Math.round(Math.min(60, 18 + Math.sqrt(connections) * 7));
-    const folder = folderOf(node.path);
+    const folder = folderOf(node.path ?? '');
 
     return {
       data: {
@@ -259,7 +261,7 @@ function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
     };
   });
 
-  const edges: ElementDefinition[] = payload.edges.map((edge) => ({
+  const edges: ElementDefinition[] = graphEdges.map((edge) => ({
     data: {
       id: edge.id,
       source: edge.source,
@@ -459,15 +461,17 @@ export function GraphView(): JSX.Element {
 
     cy.batch(() => {
       cy.elements().remove();
+      const sourceEdges = payload.edges ?? [];
+      const sourceNodes = payload.nodes ?? [];
       const filtered: GraphPayload = {
         ...payload,
-        edges: payload.edges.filter((edge) => {
+        edges: sourceEdges.filter((edge) => {
           if (hideTypeOnly && edge.typeOnly) return false;
           return true;
         }),
         nodes: collapseBarrels
-          ? payload.nodes.filter((node) => !/(?:^|\/)index\.[cm]?[jt]sx?$/.test(node.path))
-          : payload.nodes,
+          ? sourceNodes.filter((node) => !/(?:^|\/)index\.[cm]?[jt]sx?$/.test(node.path ?? ''))
+          : sourceNodes,
       };
       if (collapseBarrels) {
         const visible = new Set(filtered.nodes.map((node) => node.id));
@@ -477,7 +481,7 @@ export function GraphView(): JSX.Element {
       }
       cy.add(toElements(filtered, isDark));
     });
-    cy.layout(layoutOptions(layout, payload.nodes.length)).run();
+    cy.layout(layoutOptions(layout, (payload.nodes ?? []).length)).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload, layout, hideTypeOnly, collapseBarrels]);
 
@@ -826,7 +830,7 @@ export function GraphView(): JSX.Element {
       {payload?.truncated && (
         <div className="px-3 pt-2">
           <Warning>
-            Showing the {payload.nodes.length} most connected of {payload.totalNodeCount} files.
+            Showing the {(payload.nodes ?? []).length} most connected of {payload.totalNodeCount} files.
             Narrow by folder, or select a node and turn on Focus, to see a complete subgraph.
           </Warning>
         </div>

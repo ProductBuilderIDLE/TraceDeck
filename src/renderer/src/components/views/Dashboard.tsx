@@ -28,7 +28,7 @@ function ChangedImpact({ projectId }: { projectId: number }): JSX.Element | null
     let cancelled = false;
     invoke('git:changed-files', { projectId })
       .then(async (files) => {
-        if (cancelled || files.length === 0) {
+        if (cancelled || !files || files.length === 0) {
           if (!cancelled) setSummary(null);
           return;
         }
@@ -37,9 +37,11 @@ function ChangedImpact({ projectId }: { projectId: number }): JSX.Element | null
           changedPaths: files.map((file) => file.relativePath),
         });
         if (!cancelled) {
+          const affected = impact?.affectedPaths?.length ?? 0;
+          const tests = impact?.testPaths?.length ?? 0;
           setSummary(
-            `${files.length} file(s) differ from HEAD; ${impact.affectedPaths.length} file(s) could be affected` +
-              (impact.testPaths.length > 0 ? `, including ${impact.testPaths.length} test file(s)` : '') +
+            `${files.length} file(s) differ from HEAD; ${affected} file(s) could be affected` +
+              (tests > 0 ? `, including ${tests} test file(s)` : '') +
               '.',
           );
         }
@@ -56,25 +58,26 @@ function ChangedImpact({ projectId }: { projectId: number }): JSX.Element | null
   return <Card title="Working tree impact">{summary}</Card>;
 }
 
-function LimitationsCard({ limitations }: { limitations: readonly string[] }): JSX.Element | null {
-  if (limitations.length === 0) return null;
+function LimitationsCard({ limitations }: { limitations: readonly string[] | undefined }): JSX.Element | null {
+  const items = limitations ?? [];
+  if (items.length === 0) return null;
 
   return (
-    <Card title={`Analysis limitations (${limitations.length})`}>
+    <Card title={`Analysis limitations (${items.length})`}>
       <p className="mb-2 text-[11px] leading-relaxed text-ink-muted">
         These are things this scan could not determine. Results elsewhere in the app should be read
         with them in mind.
       </p>
       <ul className="max-h-56 space-y-1 overflow-y-auto">
-        {limitations.slice(0, 60).map((limitation) => (
+        {items.slice(0, 60).map((limitation) => (
           <li key={limitation} className="mono-path text-ink-faint">
             {limitation}
           </li>
         ))}
       </ul>
-      {limitations.length > 60 && (
+      {items.length > 60 && (
         <p className="mt-2 text-[11px] text-ink-faint">
-          …and {limitations.length - 60} more.
+          …and {items.length - 60} more.
         </p>
       )}
     </Card>
@@ -121,7 +124,7 @@ export function Dashboard(): JSX.Element {
 
   if (stats.totalFiles === 0) {
     const explanation =
-      lastScan.summary?.limitations.find((limitation) =>
+      lastScan.summary?.limitations?.find((limitation) =>
         limitation.startsWith('No supported source files'),
       ) ??
       'The completed scan did not find a source file supported by the dependency graph.';
@@ -144,6 +147,10 @@ export function Dashboard(): JSX.Element {
   }
 
   const summary = lastScan.summary;
+  const publicApi = stats.publicApi ?? [];
+  const licenses = stats.licenses ?? [];
+  const topImpactFiles = stats.topImpactFiles ?? [];
+  const addedTitles = stats.scanComparison?.addedTitles ?? [];
 
   return (
     <div className="space-y-4 p-5">
@@ -227,9 +234,9 @@ export function Dashboard(): JSX.Element {
             {stats.scanComparison.added} new · {stats.scanComparison.removed} gone ·{' '}
             {stats.scanComparison.persisted} unchanged
           </p>
-          {stats.scanComparison.addedTitles.length > 0 && (
+          {addedTitles.length > 0 && (
             <ul className="mt-2 space-y-0.5">
-              {stats.scanComparison.addedTitles.map((title) => (
+              {addedTitles.map((title) => (
                 <li key={title} className="text-[11px] text-ink-muted">
                   + {title}
                 </li>
@@ -239,10 +246,10 @@ export function Dashboard(): JSX.Element {
         </Card>
       )}
 
-      {stats.publicApi.length > 0 && (
+      {publicApi.length > 0 && (
         <Card title="Public API (package.json exports)">
           <ul className="space-y-0.5">
-            {stats.publicApi.map((entry) => (
+            {publicApi.map((entry) => (
               <li key={entry} className="mono-path text-ink-muted">
                 {entry}
               </li>
@@ -251,10 +258,10 @@ export function Dashboard(): JSX.Element {
         </Card>
       )}
 
-      {stats.licenses.length > 0 && (
+      {licenses.length > 0 && (
         <Card title="Dependency licenses">
           <ul className="max-h-48 space-y-0.5 overflow-y-auto">
-            {stats.licenses.slice(0, 40).map((entry) => (
+            {licenses.slice(0, 40).map((entry) => (
               <li key={entry.packageName} className="flex justify-between gap-3 text-[11px]">
                 <span className="text-ink-muted">{entry.packageName}</span>
                 <span className="font-mono text-ink-faint">
@@ -268,12 +275,12 @@ export function Dashboard(): JSX.Element {
       )}
 
       <Card title="Files by change impact score">
-        {stats.topImpactFiles.length === 0 ? (
+        {topImpactFiles.length === 0 ? (
           <p className="text-[12px] text-ink-muted">No files to rank yet.</p>
         ) : (
           <>
             <ul className="divide-y divide-edge">
-              {stats.topImpactFiles.map((entry) => (
+              {topImpactFiles.map((entry) => (
                 <li key={entry.nodeId}>
                   <button
                     type="button"
@@ -288,7 +295,7 @@ export function Dashboard(): JSX.Element {
             </ul>
             <div className="mt-3 border-t border-edge pt-2.5">
               <Caveat>
-                {stats.topImpactFiles[0]?.formulaDescription}
+                {topImpactFiles[0]?.formulaDescription}
                 {' Select a file to see its full score breakdown.'}
               </Caveat>
             </div>
@@ -296,7 +303,7 @@ export function Dashboard(): JSX.Element {
         )}
       </Card>
 
-      {summary && <LimitationsCard limitations={summary.limitations} />}
+      {summary && <LimitationsCard limitations={summary.limitations ?? []} />}
     </div>
   );
 }

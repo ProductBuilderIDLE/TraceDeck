@@ -85,15 +85,39 @@ export class AnalysisService {
       .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
       .slice(0, 10);
 
-    const snapshots = this.store.snapshots.latestTwo(projectId);
-    const currentSnap = snapshots[0];
-    const previousSnap = snapshots[1];
-    const comparison = currentSnap
-      ? compareFingerprints(previousSnap?.fingerprints ?? [], currentSnap.fingerprints)
-      : null;
+    let comparison: DashboardStats['scanComparison'] = null;
+    try {
+      const snapshots = this.store.snapshots.latestTwo(projectId);
+      const currentSnap = snapshots[0];
+      const previousSnap = snapshots[1];
+      if (currentSnap) {
+        const diff = compareFingerprints(
+          Array.isArray(previousSnap?.fingerprints) ? previousSnap.fingerprints : [],
+          Array.isArray(currentSnap.fingerprints) ? currentSnap.fingerprints : [],
+        );
+        comparison = {
+          previousScanId: previousSnap?.scanId ?? null,
+          added: diff.added.length,
+          removed: diff.removed.length,
+          persisted: diff.persisted,
+          addedTitles: diff.added.slice(0, 8).map((entry) => entry.title ?? ''),
+          removedTitles: diff.removed.slice(0, 8).map((entry) => entry.title ?? ''),
+        };
+      }
+    } catch {
+      comparison = null;
+    }
 
-    const rootManifest = readRootManifest(project.rootPath);
-    const licenses = licenseInventory(project.rootPath, declaredDependencyNames(rootManifest));
+    let licenses: DashboardStats['licenses'] = [];
+    let publicApi: string[] = [];
+    try {
+      const rootManifest = readRootManifest(project.rootPath);
+      licenses = licenseInventory(project.rootPath, declaredDependencyNames(rootManifest));
+      publicApi = publicApiFromManifest(rootManifest);
+    } catch {
+      licenses = [];
+      publicApi = [];
+    }
 
     return {
       project,
@@ -124,17 +148,8 @@ export class AnalysisService {
       complexityHotspotCount: this.store.findings.countByType(projectId, 'complexity-hotspot'),
       topImpactFiles,
       licenses,
-      publicApi: publicApiFromManifest(rootManifest),
-      scanComparison: comparison
-        ? {
-            previousScanId: previousSnap?.scanId ?? null,
-            added: comparison.added.length,
-            removed: comparison.removed.length,
-            persisted: comparison.persisted,
-            addedTitles: comparison.added.slice(0, 8).map((entry) => entry.title),
-            removedTitles: comparison.removed.slice(0, 8).map((entry) => entry.title),
-          }
-        : null,
+      publicApi,
+      scanComparison: comparison,
     };
   }
 
@@ -527,10 +542,11 @@ export class AnalysisService {
       fanOut: index.edgesFrom(fileId).length,
       testDependents,
       entryPointsCovering: [...new Set(covering)],
-      owners: ownersForPath(
-        this.store.projects.findById(projectId)?.rootPath ?? '',
-        file.relativePath,
-      ),
+      owners:
+        ownersForPath(
+          this.store.projects.findById(projectId)?.rootPath ?? '',
+          file.relativePath,
+        ) ?? [],
       maxComplexity,
       maxLcom,
     };

@@ -79,6 +79,7 @@ export function App(): JSX.Element {
     invoke('system:set-theme', { theme }).catch(() => undefined);
   }, [theme]);
 
+  const lastScan = useAppStore((state) => state.lastScan);
   const View = VIEWS[activeView];
 
   return (
@@ -88,7 +89,7 @@ export function App(): JSX.Element {
         <ErrorBanner />
         <div className="flex min-h-0 flex-1">
           <MainPanel>
-            <ErrorBoundary key={activeView}>
+            <ErrorBoundary key={`${activeView}:${lastScan?.id ?? 'none'}`}>
               <View />
             </ErrorBoundary>
           </MainPanel>

@@ -35,9 +35,20 @@ export function MetricsView(): JSX.Element {
     ])
       .then(([metrics, gitChurn]) => {
         if (cancelled) return;
-        setFolders(metrics.folders);
-        setOutliers(metrics.outliers);
-        setChurn(gitChurn);
+        if (Array.isArray(metrics)) {
+          setFolders(metrics);
+          setOutliers([]);
+        } else {
+          setFolders(metrics.folders ?? []);
+          setOutliers(metrics.outliers ?? []);
+        }
+        setChurn(gitChurn ?? []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFolders([]);
+        setOutliers([]);
+        setChurn([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

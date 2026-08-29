@@ -33,7 +33,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
   return (
     <div className="space-y-1.5">
       <div className="rounded border border-edge bg-surface-2 p-2">
-        {details.cyclePath.map((path, index) => (
+        {details.cyclePath?.map((path, index) => (
           <div
             key={`${path}-${index}`}
             className="flex items-center gap-1.5"
@@ -47,7 +47,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
             >
               {path}
             </button>
-            {details.edges[index]?.line && (
+            {details.edges?.[index]?.line && (
               <span className="shrink-0 font-mono text-[10px] text-ink-faint">
                 :{details.edges[index]?.line}
               </span>
@@ -56,7 +56,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
         ))}
       </div>
       <p className="text-[11px] text-ink-faint">
-        {details.cyclePath.length - 1} file(s) in this cycle. The last import closes the loop back
+        {(details.cyclePath?.length ?? 1) - 1} file(s) in this cycle. The last import closes the loop back
         to the first file.
       </p>
     </div>
@@ -78,7 +78,7 @@ function UnusedExportBody({ finding }: { finding: Finding }): JSX.Element {
         <span className="text-[10px] text-ink-faint">{details.symbolKind}</span>
         <PathLabel path={`${details.filePath}:${details.line}`} />
       </button>
-      {details.caveats.map((caveat) => (
+      {(details.caveats ?? []).map((caveat) => (
         <Caveat key={caveat}>{caveat}</Caveat>
       ))}
     </div>
@@ -263,7 +263,7 @@ function MetricFindingBody({ finding }: { finding: Finding }): JSX.Element {
   if (details.kind === 'duplicate-code') {
     return (
       <ul className="space-y-0.5">
-        {details.filePaths.map((path, index) => (
+        {details.filePaths?.map((path, index) => (
           <li key={`${path}-${index}`} className="mono-path text-ink-muted">
             {path}:{details.startLines[index] ?? 1}
           </li>

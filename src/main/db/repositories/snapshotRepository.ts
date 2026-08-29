@@ -49,13 +49,16 @@ export class SnapshotRepository {
         `SELECT * FROM scan_snapshots WHERE project_id = ? ORDER BY id DESC LIMIT 2`,
       )
       .all(projectId);
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      scanId: row.scan_id,
-      createdAt: row.created_at,
-      fingerprints: parseJson<SnapshotFingerprint[]>(row.fingerprints_json, []),
-    }));
+    return rows.map((row) => {
+      const parsed = parseJson<SnapshotFingerprint[]>(row.fingerprints_json, []);
+      return {
+        id: row.id,
+        projectId: row.project_id,
+        scanId: row.scan_id,
+        createdAt: row.created_at,
+        fingerprints: Array.isArray(parsed) ? parsed : [],
+      };
+    });
   }
 
   prune(projectId: number, keep: number): void {

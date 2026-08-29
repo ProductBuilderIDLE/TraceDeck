@@ -24,8 +24,9 @@ describe('schema migrations', () => {
 
     const version = runMigrations(db);
 
-    expect(version).toBe(LATEST_SCHEMA_VERSION);
-    expect(currentSchemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
+    expect(version).toBe(4);
+    expect(currentSchemaVersion(db)).toBe(4);
+    expect(LATEST_SCHEMA_VERSION).toBe(4);
   });
 
   it('creates every table the data model requires', () => {
@@ -35,6 +36,7 @@ describe('schema migrations', () => {
     expect(tableNames(db)).toEqual([
       'analysis_findings',
       'architecture_rules',
+      'change_reviews',
       'files',
       'finding_dismissals',
       'graph_edges',
@@ -45,6 +47,23 @@ describe('schema migrations', () => {
       'scans',
       'symbols',
     ]);
+  });
+
+  it('upgrades a version 3 database without rewriting existing rows', () => {
+    const db = new Database(':memory:');
+    for (const migration of MIGRATIONS.filter(({ version }) => version <= 3)) {
+      migration.up(db);
+    }
+    db.prepare(
+      `INSERT INTO projects (name, root_path, created_at, configuration_json)
+       VALUES (?, ?, ?, ?)`,
+    ).run('existing', '/tmp/existing', '2026-01-01T00:00:00.000Z', '{}');
+    db.pragma('user_version = 3');
+
+    expect(tableNames(db)).not.toContain('change_reviews');
+    expect(runMigrations(db)).toBe(4);
+    expect(tableNames(db)).toContain('change_reviews');
+    expect(db.prepare('SELECT name FROM projects').get()).toEqual({ name: 'existing' });
   });
 
   it('is idempotent when run again on an up-to-date database', () => {

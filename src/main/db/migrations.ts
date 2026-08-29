@@ -199,6 +199,30 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: 'change-reviews',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE change_reviews (
+          id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id                      INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+          base_commit                     TEXT    NOT NULL,
+          base_tree_id                    TEXT,
+          working_tree_fingerprint        TEXT    NOT NULL,
+          user_configuration_fingerprint  TEXT    NOT NULL,
+          effective_baseline_fingerprint  TEXT    NOT NULL,
+          working_tree_scan_id            INTEGER NOT NULL,
+          tracedeck_version               TEXT    NOT NULL,
+          result_schema_version           INTEGER NOT NULL,
+          traversal_depth                 INTEGER NOT NULL,
+          completed_at                    TEXT    NOT NULL,
+          summary_json                    TEXT    NOT NULL,
+          retained_result_json            TEXT    NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 export function currentSchemaVersion(db: Db): number {

@@ -1,5 +1,12 @@
 import { join } from 'node:path';
-import type { ChangeReviewResult, ChangeReviewSummary, ReviewOperationPhase, ReviewSection, ReviewStatus } from '@shared/changeReview';
+import type {
+  ChangeReviewResult,
+  ChangeReviewSummary,
+  ReviewFileDiff,
+  ReviewOperationPhase,
+  ReviewSection,
+  ReviewStatus,
+} from '@shared/changeReview';
 import {
   DEFAULT_MAX_TRAVERSAL_DEPTH,
   MAX_REVIEW_DETAIL_ITEMS,
@@ -14,8 +21,9 @@ import {
   type DataStore,
 } from '../../db';
 import type { ProjectOperationLease, ProjectOperationRegistry } from '../projectOperations';
+import { resolveWithinProject } from '../../utils/paths';
 import { canonicalSha256, compareCodePoints } from './canonical';
-import { captureWorkingTree, type CapturedWorkingTree } from './gitStatus';
+import { captureWorkingTree, readReviewDiff, type CapturedWorkingTree } from './gitStatus';
 import {
   createReviewTempRoot,
   materializeHeadTree,
@@ -45,6 +53,7 @@ export interface ChangeReviewCoordinatorDependencies {
   traceDeckVersion: string;
   runScan: typeof runScan;
   captureWorkingTree: typeof captureWorkingTree;
+  readReviewDiff: typeof readReviewDiff;
   createReviewTempRoot: typeof createReviewTempRoot;
   materializeHeadTree: typeof materializeHeadTree;
   removeVerifiedReviewTemp: typeof removeVerifiedReviewTemp;
@@ -67,6 +76,7 @@ export class ChangeReviewCoordinatorError extends Error {
 function coordinatorError(code: string): ChangeReviewCoordinatorError {
   const messages: Record<string, string> = {
     NOT_FOUND: 'That project no longer exists.',
+    REVIEW_NOT_FOUND: 'That change review item no longer exists.',
     NOT_A_GIT_REPO: 'The selected project is not a Git repository.',
     HEAD_UNBORN: 'The Git repository does not have a commit yet.',
     SCAN_IN_PROGRESS: 'A scan is already running for this project.',
@@ -247,6 +257,7 @@ export function defaultChangeReviewCoordinatorDependencies(
     traceDeckVersion,
     runScan,
     captureWorkingTree,
+    readReviewDiff,
     createReviewTempRoot,
     materializeHeadTree,
     removeVerifiedReviewTemp,
@@ -373,6 +384,41 @@ export class ChangeReviewCoordinator {
 
   async summary(projectId: number): Promise<ChangeReviewSummary | null> {
     return this.store.changeReviews.latestForProject(projectId)?.summary ?? null;
+  }
+
+  /** Reads a diff only when the retained review still describes the exact current worktree. */
+  async fileDiff(record: ChangeReviewRecord, relativePath: string): Promise<ReviewFileDiff> {
+    if (!record.compatible || !record.result) throw coordinatorError('REVIEW_INCOMPATIBLE');
+
+    const status = await this.status(record.projectId);
+    if (
+      status.latestReview?.reviewId !== record.id
+      || status.latestReview.freshness !== 'current'
+      || status.baseCommit === null
+      || status.baseCommit !== record.baseCommit
+    ) {
+      throw coordinatorError('REVIEW_STALE');
+    }
+
+    const change = record.result.fileChanges.find((candidate) => (
+      candidate.relativePath === relativePath
+      || candidate.oldPath === relativePath
+      || candidate.copiedFrom === relativePath
+    ));
+    if (!change) throw coordinatorError('REVIEW_NOT_FOUND');
+
+    const project = this.store.projects.findById(record.projectId);
+    if (!project) throw coordinatorError('NOT_FOUND');
+    resolveWithinProject(project.rootPath, relativePath);
+    try {
+      return await this.dependencies.readReviewDiff({
+        rootPath: project.rootPath,
+        baseCommit: record.baseCommit,
+        change,
+      });
+    } catch (error) {
+      throw normalizeFailure(error, this.statusLease(record.projectId));
+    }
   }
 
   private acquireLease(projectId: number, useRepositoryCache: boolean): ProjectOperationLease {

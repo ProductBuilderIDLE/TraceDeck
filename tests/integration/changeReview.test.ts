@@ -12,7 +12,7 @@ import {
   ChangeReviewCoordinator,
   type ChangeReviewCoordinatorDependencies,
 } from '@main/services/changeReview/coordinator';
-import { captureWorkingTree } from '@main/services/changeReview/gitStatus';
+import { captureWorkingTree, readReviewDiff } from '@main/services/changeReview/gitStatus';
 import {
   createReviewTempRoot,
   materializeHeadTree,
@@ -59,6 +59,7 @@ function defaultDependencies(): ChangeReviewCoordinatorDependencies {
     traceDeckVersion: TRACEDECK_VERSION,
     runScan,
     captureWorkingTree,
+    readReviewDiff,
     createReviewTempRoot,
     materializeHeadTree,
     removeVerifiedReviewTemp,

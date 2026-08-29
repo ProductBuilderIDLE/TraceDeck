@@ -191,7 +191,7 @@ function limitation(
 }
 
 function compareOptions(overrides: Partial<ReviewComparatorOptions> = {}): ReviewComparatorOptions {
-  return { maxRetained: 2_000, ...overrides };
+  return { maxDepth: 5, maxRetained: 2_000, ...overrides };
 }
 
 function reverseSnapshotArrays(snapshot: ReviewSnapshot): ReviewSnapshot {
@@ -319,15 +319,21 @@ describe('review snapshot comparison', () => {
       userConfigurationFingerprint: 'user-configuration',
       effectiveBaselineFingerprint: 'effective-baseline',
       workingTreeScanId: 22,
-      traversalDepth: 0,
+      traversalDepth: 5,
       affectedFiles: [],
       candidateTests: [],
-      noKnownTests: [],
     });
+    expect(result.noKnownTests).toHaveLength(2);
     expect(result.counts['affected-files']).toEqual({
       totalCount: 0,
       retainedCount: 0,
       truncated: false,
+      truncatedAtDepth: false,
+    });
+    expect(result.counts['no-known-tests']).toEqual({
+      totalCount: 3,
+      retainedCount: 2,
+      truncated: true,
       truncatedAtDepth: false,
     });
   });
@@ -616,6 +622,58 @@ describe('review snapshot comparison', () => {
       { fromPath: 'src/index.ts', toPath: 'src/origin.ts', edgeType: 're-export', side: 'target' },
       { fromPath: 'src/new.ts', toPath: 'src/core.ts', edgeType: 'import', side: 'target' },
     ].sort((left, right) => compareCodePoints(graphEdgeKey(left), graphEdgeKey(right))));
+  });
+
+  it('fills possible impact, candidate tests, counts, depth, and explanation graph evidence', () => {
+    const appEdge = edge('src/app.ts', 'src/gone.ts', false, { edgeType: 'require' });
+    const testEdge = edge('src/gone.test.ts', 'src/gone.ts', false, { edgeType: 'dynamic-import' });
+    const result = compareReviewSnapshots(
+      reviewSnapshot('baseline', { edges: [testEdge, appEdge] }),
+      reviewSnapshot('target'),
+      [change('src/gone.ts', { changeType: 'deleted' })],
+      compareOptions({ maxDepth: 3 }),
+    );
+    const appImpact = result.affectedFiles.find((item) => item.destinationPath === 'src/app.ts');
+
+    expect(result.traversalDepth).toBe(3);
+    expect(appImpact).toMatchObject({
+      depth: 1,
+      direct: true,
+      baselinePresent: true,
+      targetPresent: false,
+      explanations: [{
+        side: 'baseline',
+        originPath: 'src/gone.ts',
+        path: ['src/gone.ts', 'src/app.ts'],
+        edgeTypes: ['require'],
+      }],
+    });
+    expect(result.candidateTests.map((item) => item.destinationPath)).toEqual(['src/gone.test.ts']);
+    expect(result.noKnownTests).toEqual([]);
+    expect(result.counts['affected-files']).toEqual({
+      totalCount: 2,
+      retainedCount: 2,
+      truncated: false,
+      truncatedAtDepth: false,
+    });
+    expect(result.counts['candidate-tests']).toEqual({
+      totalCount: 1,
+      retainedCount: 1,
+      truncated: false,
+      truncatedAtDepth: false,
+    });
+    expect(result.counts['no-known-tests']).toEqual({
+      totalCount: 0,
+      retainedCount: 0,
+      truncated: false,
+      truncatedAtDepth: false,
+    });
+    expect(result.graphEvidence.edges).toContainEqual({
+      fromPath: 'src/app.ts',
+      toPath: 'src/gone.ts',
+      edgeType: 'require',
+      side: 'baseline',
+    });
   });
 
   it.each([

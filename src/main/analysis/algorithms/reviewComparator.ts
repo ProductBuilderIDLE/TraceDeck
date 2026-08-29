@@ -1,4 +1,10 @@
 import type { ReachableExportRecord } from './reachableExports';
+import { DEPENDENCY_EDGE_TYPES, GraphIndex } from './graphIndex';
+import {
+  computeReviewImpact,
+  ReviewImpactCancelledError,
+  type ReviewImpactResult,
+} from './reviewImpact';
 import type {
   ChangeReviewResult,
   ReviewArchitectureChange,
@@ -15,6 +21,7 @@ import type {
   ReviewSection,
 } from '@shared/changeReview';
 import { MAX_REVIEW_DETAIL_ITEMS, REVIEW_RESULT_SCHEMA_VERSION } from '@shared/constants';
+import { fileNodeId } from '@shared/nodeIds';
 import type {
   NormalizedArchitectureViolation,
   NormalizedCycle,
@@ -28,6 +35,7 @@ import {
 } from '../../services/changeReview/canonical';
 
 export interface ReviewComparatorOptions {
+  maxDepth: number;
   maxRetained: number;
   signal?: { cancelled: boolean };
 }
@@ -220,13 +228,13 @@ function retainCategory<T>(
   };
 }
 
-function emptyCount(): ReviewCategoryCount {
-  return {
-    totalCount: 0,
-    retainedCount: 0,
-    truncated: false,
-    truncatedAtDepth: false,
-  };
+function impactCount(
+  totalCount: number,
+  retainedCount: number,
+  truncated: boolean,
+  truncatedAtDepth: boolean,
+): ReviewCategoryCount {
+  return { totalCount, retainedCount, truncated, truncatedAtDepth };
 }
 
 function retainedLimit(maxRetained: number): number {
@@ -234,6 +242,17 @@ function retainedLimit(maxRetained: number): number {
     throw new RangeError('Review comparison maxRetained must be a non-negative safe integer.');
   }
   return Math.min(maxRetained, MAX_REVIEW_DETAIL_ITEMS);
+}
+
+function snapshotGraphIndex(snapshot: ReviewSnapshot): GraphIndex {
+  return new GraphIndex(snapshot.edges.map((edge) => ({
+    from: fileNodeId(edge.fromPath),
+    to: fileNodeId(edge.toPath),
+    edgeType: edge.edgeType,
+    unresolved: false,
+    sourceLine: edge.sourceLines[0] ?? null,
+    specifier: edge.specifiers[0] ?? null,
+  })), { edgeTypes: DEPENDENCY_EDGE_TYPES });
 }
 
 function assertComparable(baseline: ReviewSnapshot, target: ReviewSnapshot): void {
@@ -398,6 +417,30 @@ function buildGraphEvidence(
   };
 }
 
+function mergeGraphEvidence(
+  structural: ReviewGraphEvidence,
+  impact: ReviewGraphEvidence,
+  checkpoint: CancellationCheckpoint,
+): ReviewGraphEvidence {
+  const nodePaths = new Set([...structural.nodePaths, ...impact.nodePaths]);
+  const edgesByKey = new Map<string, ReviewGraphEvidence['edges'][number]>();
+  let processed = 0;
+
+  for (const edge of [...structural.edges, ...impact.edges]) {
+    processed += 1;
+    if (processed % 500 === 0) checkpoint();
+    edgesByKey.set(graphEdgeStableKey(edge), edge);
+  }
+
+  return {
+    nodePaths: [...nodePaths].sort(compareCodePoints),
+    edges: [...edgesByKey.values()].sort((left, right) => compareCodePoints(
+      graphEdgeStableKey(left),
+      graphEdgeStableKey(right),
+    )),
+  };
+}
+
 export function compareReviewSnapshots(
   baseline: ReviewSnapshot,
   target: ReviewSnapshot,
@@ -545,7 +588,23 @@ export function compareReviewSnapshots(
   );
 
   checkpoint();
-  const graphEvidence = buildGraphEvidence(
+  let impact: ReviewImpactResult;
+  try {
+    impact = computeReviewImpact({
+      baselineIndex: snapshotGraphIndex(baseline),
+      targetIndex: snapshotGraphIndex(target),
+      changes,
+      maxDepth: options.maxDepth,
+      maxRetained: limit,
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (error instanceof ReviewImpactCancelledError) throw new ReviewComparisonCancelledError();
+    throw error;
+  }
+
+  checkpoint();
+  const structuralGraphEvidence = buildGraphEvidence(
     baseline,
     target,
     edges.items,
@@ -553,6 +612,7 @@ export function compareReviewSnapshots(
     exports.items,
     checkpoint,
   );
+  const graphEvidence = mergeGraphEvidence(structuralGraphEvidence, impact.graphEvidence, checkpoint);
   checkpoint();
 
   const counts: Record<ReviewSection, ReviewCategoryCount> = {
@@ -562,9 +622,24 @@ export function compareReviewSnapshots(
     'architecture-violations': architecture.count,
     cycles: cycles.count,
     'reachable-exports': exports.count,
-    'affected-files': emptyCount(),
-    'candidate-tests': emptyCount(),
-    'no-known-tests': emptyCount(),
+    'affected-files': impactCount(
+      impact.totalAffected,
+      impact.affectedFiles.length,
+      impact.truncatedAffected,
+      impact.truncatedAtDepth,
+    ),
+    'candidate-tests': impactCount(
+      impact.totalCandidateTests,
+      impact.candidateTests.length,
+      impact.truncatedCandidateTests,
+      impact.truncatedAtDepth,
+    ),
+    'no-known-tests': impactCount(
+      impact.totalNoKnownTests,
+      impact.noKnownTests.length,
+      impact.truncatedNoKnownTests,
+      impact.truncatedAtDepth,
+    ),
     limitations: limitations.count,
   };
 
@@ -576,16 +651,16 @@ export function compareReviewSnapshots(
     userConfigurationFingerprint: target.userConfigurationFingerprint,
     effectiveBaselineFingerprint: target.effectiveBaselineFingerprint,
     workingTreeScanId: target.scanId,
-    traversalDepth: 0,
+    traversalDepth: options.maxDepth,
     fileChanges: files.items,
     edgeChanges: edges.items,
     findingChanges: findings.items,
     architectureChanges: architecture.items,
     cycleChanges: cycles.items,
     exportChanges: exports.items,
-    affectedFiles: [],
-    candidateTests: [],
-    noKnownTests: [],
+    affectedFiles: impact.affectedFiles,
+    candidateTests: impact.candidateTests,
+    noKnownTests: impact.noKnownTests,
     limitations: limitations.items,
     graphEvidence,
     counts,

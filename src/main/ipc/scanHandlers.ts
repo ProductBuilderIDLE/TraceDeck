@@ -3,7 +3,7 @@ import { SCAN_PROGRESS_EVENT } from '@shared/ipc';
 import type { ScanProgress } from '@shared/types';
 import type { DataStore } from '../db';
 import { runScan, ScanCancelledError } from '../analysis/scanner';
-import { ProjectOperationRegistry } from '../services/projectOperations';
+import type { ProjectOperationRegistry } from '../services/projectOperations';
 import { watchProject, type WatchFactory } from '../services/watchService';
 import { asObject, requireBoolean, requireInt } from '../utils/validation';
 import { HandledError, type HandlerMap } from './registry';
@@ -64,7 +64,7 @@ async function runProjectScan(
 export function startWatchingForProject(
   store: DataStore,
   projectId: number,
-  operations: ProjectOperationRegistry = new ProjectOperationRegistry(),
+  operations: ProjectOperationRegistry,
   watchFolder?: WatchFactory,
 ): void {
   const project = store.projects.findById(projectId);
@@ -82,10 +82,7 @@ export function startWatchingForProject(
   );
 }
 
-export function scanHandlers(
-  store: DataStore,
-  operations: ProjectOperationRegistry = new ProjectOperationRegistry(),
-): HandlerMap {
+export function scanHandlers(store: DataStore, operations: ProjectOperationRegistry): HandlerMap {
   return {
     'scan:start': async (payload) => {
       const value = asObject(payload);

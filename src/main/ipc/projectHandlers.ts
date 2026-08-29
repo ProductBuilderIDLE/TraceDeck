@@ -13,7 +13,7 @@ import {
 } from '../utils/validation';
 import { startWatchingForProject } from './scanHandlers';
 import { forgetPreviewContext } from '../services/previewService';
-import { ProjectOperationRegistry } from '../services/projectOperations';
+import type { ProjectOperationRegistry } from '../services/projectOperations';
 import { stopWatching } from '../services/watchService';
 import { HandledError, type HandlerMap } from './registry';
 
@@ -46,10 +46,7 @@ function parseConfiguration(raw: unknown): ProjectConfiguration {
   };
 }
 
-export function projectHandlers(
-  store: DataStore,
-  operations: ProjectOperationRegistry = new ProjectOperationRegistry(),
-): HandlerMap {
+export function projectHandlers(store: DataStore, operations: ProjectOperationRegistry): HandlerMap {
   return {
     'project:list': async (payload) => {
       expectVoid(payload);

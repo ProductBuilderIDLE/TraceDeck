@@ -20,6 +20,7 @@ TraceDeck is a **private, offline Electron app** for dependency graphs and chang
 | Tree-sitter HTML/CSS/Python/Go/Rust | Shipped |
 | A–I (syntax findings, preview, watcher, git, Monaco, metrics, CLI, graph UX, Sass, language roots, …) | **Shipped** |
 | Dashboard `undefined.length` crash after scan | **Fixed** (defensive `?? []` on IPC arrays; ErrorBoundary remounts on scan id) |
+|| Change review workspace | **Shipped** (`review:*` IPC, `change_reviews` table, CLI `--review`) |
 | Typecheck | Green (`npm run typecheck`) |
 | Tests | **435 passed**, 2 skipped (after A–I) |
 | J (LSP, cloud, CVE) | **Out of scope** — do not add |
@@ -30,7 +31,7 @@ Do **not** commit unless the owner asks.
 
 ## 2. Product in one paragraph
 
-A developer opens a local folder, scans, and gets a file/symbol **dependency graph**, **findings**, **blast radius**, a transparent **change-impact score**, **metrics**, **architecture rules**, and an in-app **Monaco** editor. Explorer shows **inventory** (`project_files`), not only graph sources. Git helpers are **local** (diff, blame, churn, co-change, mergetool). A headless **CLI** writes `<root>/.tracedeck/cli.sqlite`.
+A developer opens a local folder, scans, and gets a file/symbol **dependency graph**, **findings**, **blast radius**, a transparent **change-impact score**, **metrics**, **architecture rules**, a dedicated **change review** workspace (working tree vs `HEAD`), and an in-app **Monaco** editor. Explorer shows **inventory** (`project_files`), not only graph sources. Git helpers are **local** (diff, blame, churn, co-change, mergetool). A headless **CLI** writes `<root>/.tracedeck/cli.sqlite`.
 
 Nothing is uploaded. Same repo → same graph and findings.
 
@@ -167,7 +168,7 @@ Types: `circular-dependency`, `unused-export-candidate`, `architecture-violation
 
 ## 9. IPC extras (beyond the original CRUD)
 
-See full contract in `src/shared/ipc.ts`. Notable channels: `source:read` / save / format, `search:text`, `analysis:preview`, `analysis:diff-impact`, `analysis:folder-metrics` → **`ProjectMetrics` `{ folders, outliers }`**, `git:*`, `rules:apply-pack`, `system:save-export` (PNG/SVG), `inventory:list`.
+See full contract in `src/shared/ipc.ts`. Notable channels: `source:read` / save / format, `search:text`, `analysis:preview`, `analysis:diff-impact`, `analysis:folder-metrics` → **`ProjectMetrics` `{ folders, outliers }`**, `git:*`, `review:*` (`status`, `start`, `cancel`, `summary`, `query`, `file-diff`, `export`), `rules:apply-pack`, `system:save-export` (PNG/SVG), `inventory:list`.
 
 `analysis:folder-metrics` used to be consumed as an array; Metrics.tsx accepts both shapes.
 
@@ -185,7 +186,19 @@ Do not assume dashboard/graph/metrics payloads always include new arrays. HMR or
 npm run scan -- [root] [--full] [--fail-on type,type] [--format text|json|sarif] [--baseline file] [--write-baseline]
 ```
 
-DB at `<root>/.tracedeck/cli.sqlite`. `tsconfig.node.json` must include **`src/main/**/*.ts` and `src/cli/**/*.ts`**.
+DB at `<root>/.tracedeck/cli.sqlite`.
+
+Change review:
+
+```text
+npm run scan -- [root] --review [--review-format text|json|markdown|html] [--review-output <path>] [--review-depth <1-25>]
+```
+
+`--review` cannot be combined with `--full`, `--fail-on`, `--format`, `--baseline`, or
+`--write-baseline`. HTML requires `--review-output`.
+
+`tsconfig.node.json` includes `src/main/**/*.ts` and `src/cli/**/*.ts` and excludes
+`tests/unit/renderer/**` and `tests/e2e/**`.
 
 ---
 
@@ -196,6 +209,7 @@ DB at `<root>/.tracedeck/cli.sqlite`. `tsconfig.node.json` must include **`src/m
 - Risk percentile is **in-repo rank** (mid-rank, so ties match), not calibrated incident risk.
 - Python/Go/Rust/HTML/CSS/Sass: edges, not unused-exports or types.
 - Draft preview is this-file analysis, not a live whole-project resolve.
+- Change review compares working tree with `HEAD` only, and needs `.tracedeck/` in `.gitignore`.
 - No LSP, no AI, no CVE feed — by design.
 
 ---
@@ -218,6 +232,7 @@ DB at `<root>/.tracedeck/cli.sqlite`. `tsconfig.node.json` must include **`src/m
 | Format | `src/main/services/formatService.ts` |
 | Licenses / owners | `licenseInventory.ts`, `codeowners.ts` |
 | Reports | `src/main/services/reportService.ts` |
+|| Change review | `src/main/services/changeReview/` (coordinator, git capture, materializer, snapshot, query, report), `src/main/ipc/reviewHandlers.ts`, `src/shared/changeReview.ts` |
 | Extra IPC | `src/main/ipc/extraHandlers.ts` |
 | CLI | `src/cli/main.ts` |
 | Dashboard / graph / metrics / inspector | `src/renderer/src/components/views/` |
@@ -228,6 +243,21 @@ Tests worth knowing: `tests/unit/analysis/languageRoots.test.ts`, `parser.test.t
 
 ---
 
-## 14. One-sentence summary
+## 14. Change review quick reference
 
-TraceDeck is an offline Electron+SQLite dependency-graph app: TSC for JS/TS (and Vue/Svelte/Astro scripts), tree-sitter for HTML/CSS/Sass/Python/Go/Rust and component templates/styles, incremental scan + watcher + draft preview, Monaco (not LSP), local git helpers, metrics/CLI/graph UX, and defensive dashboard rendering after a `.length` crash on missing IPC arrays — continue work without adding network, AI, or a language server.
+- Seven typed IPC channels: `review:status`, `review:start`, `review:cancel`, `review:summary`,
+  `review:query`, `review:file-diff`, `review:export`.
+- Baseline is always the current `HEAD`; no arbitrary refs, no shell, no network.
+- Working tree is captured from Git status; the committed tree is materialized to a verified
+  temporary directory and scanned into a temporary SQLite database.
+- Result is one row per project in `change_reviews` (replaced atomically).
+- Freshness: `current`, `stale` (working tree, `HEAD`, config, or rules changed), `incompatible`
+  (schema/version mismatch).
+- CLI report formats: `text`, `json`, `markdown`, `html` (`--review-output` required for HTML).
+- Language: *possible impact*, *candidate tests*, *no known test*, *static analysis result*.
+
+---
+
+## 15. One-sentence summary
+
+TraceDeck is an offline Electron+SQLite dependency-graph app: TSC for JS/TS (and Vue/Svelte/Astro scripts), tree-sitter for HTML/CSS/Sass/Python/Go/Rust and component templates/styles, incremental scan + watcher + draft preview, a change-review workspace that compares the working tree with `HEAD`, Monaco (not LSP), local git helpers, metrics/CLI/graph UX, and defensive dashboard rendering after a `.length` crash on missing IPC arrays — continue work without adding network, AI, or a language server.

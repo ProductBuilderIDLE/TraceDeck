@@ -27,7 +27,7 @@ files, 481 passing tests.
 13. [Algorithms](#13-algorithms)
 14. [Type checking](#14-type-checking)
 15. [Findings versus limitations](#15-findings-versus-limitations)
-16. [Change impact](#16-change-impact)
+16. [Change impact and change review](#16-change-impact-and-change-review)
 17. [The scan pipeline](#17-the-scan-pipeline)
 18. [The interface](#18-the-interface)
 19. [The graph, in depth](#19-the-graph-in-depth)
@@ -296,6 +296,7 @@ SQLite via `better-sqlite3`, opened only in the main process.
 | `finding_dismissals` | Fingerprints the user dismissed |
 | `project_files` | Full inventory |
 | `scan_snapshots` | Fingerprint lists, for scan-to-scan comparison |
+|| `change_reviews` | Latest completed review per project (baseline `HEAD` + working tree evidence) |
 
 ### Rules
 
@@ -309,12 +310,15 @@ SQLite via `better-sqlite3`, opened only in the main process.
   a review decision survives a rescan and an edit above the finding does not resurrect it.
 - After a scan completes, superseded scans are pruned. Rows for unchanged files are *moved*
   onto the current scan rather than rebuilt, which is what makes that pruning safe.
+- `change_reviews` stores at most one completed row per project; `replaceLatest` deletes the
+  previous row and inserts the new one inside a transaction, rolling back to the old row if the
+  insert fails.
 
 ---
 
 ## 8. The IPC contract
 
-45 channels. `src/shared/ipc.ts` declares the payload and return type of each. Startup fails if
+52 channels. `src/shared/ipc.ts` declares the payload and return type of each. Startup fails if
 any declared channel lacks a handler. `scan:progress` is an event pushed to the renderer via
 `onScanProgress`, not an invoke.
 
@@ -330,6 +334,7 @@ any declared channel lacks a handler. `scan:progress` is an event pushed to the 
 | **source** | `read`, `save`, `format` |
 | **search** | `query`, `text` |
 | **git** | `changed-files`, `diff`, `blame`, `cochange`, `renames`, `churn`, `mergetool` |
+|| **review** | `status`, `start`, `cancel`, `summary`, `query`, `file-diff`, `export` |
 | **inventory** | `list` |
 | **dashboard** | `stats` |
 | **system** | `app-info`, `open-path`, `reveal-path`, `save-export`, `set-theme` |
@@ -604,7 +609,7 @@ The rule: if analysis skipped something, it becomes one or the other. Never neit
 
 ---
 
-## 16. Change impact
+## 16. Change impact and change review
 
 An optional, fully transparent score from 0 to 100. Arithmetic over the graph — **not a
 prediction and not a judgement about code quality**.
@@ -629,6 +634,87 @@ than at an extreme.
 
 **Working-tree impact** takes `git status`-style changed paths and walks the graph so the
 dashboard can list affected files and tests before you commit.
+
+### Change review
+
+A dedicated workspace compares the current working tree with `HEAD`. It captures Git status,
+refreshes the working-tree scan, materializes the committed tree into a verified temporary root,
+scans that baseline in an isolated SQLite database, compares the two structural snapshots, and
+persists only the latest completed result to the `change_reviews` table.
+
+This is **not an ordinary scan** and it is **not a commit**. The working tree stays unchanged
+except for TraceDeck's own `.tracedeck` output, which is excluded from review evidence and from
+discovery. The baseline scan lives in a temporary database and temporary directory that are removed
+after the review. The result row in the application database is the only long-lived artifact.
+
+**Opening and running a review.** In the GUI, open a project and choose **Change review** from the
+sidebar (or click **Open Change Review** on the dashboard). Set the traversal depth (`1`–`25`,
+default `5`) and click **Run review**. While the review runs, the header shows the current phase
+(`capturing`, `refreshing-target`, `materializing-baseline`, `analyzing-baseline`, `comparing`,
+`validating`, `persisting`, `cleanup`) and a **Cancel** button. On completion, the workspace has
+tabs for **Overview**, **Files and edges**, **Findings**, **Possible impact**, and **Limitations**.
+
+**Interpreting the workspace.** Each row is structural evidence, not a verdict:
+
+- **Changed files** — the Git status (added, modified, deleted, renamed), staged/unstaged/untracked
+  state, language, and rename/copy similarity.
+- **Files and edges** — added or removed dependency edges between files.
+- **Findings** — findings introduced or resolved by the change.
+- **Possible impact** — files and candidate tests reachable from a changed file within the selected
+  depth. The explanation path is the shortest one the graph can prove. Candidate tests are files
+  that match `TEST_FILE_PATTERNS`; they are *possible* tests, not guaranteed coverage.
+- **No known tests** — changed files for which no test file is reachable within the selected depth.
+  This is a static bound, not a statement that no tests exist.
+- **Limitations** — everything the review could not fully include (exclusions, unsupported
+  extensions, `export *` ambiguity, computed dynamic imports, etc.).
+
+Clicking a row opens a graph overlay for edges, cycles, affected files, candidate tests, or
+reachable exports, or opens the source/finding evidence panel. Graph highlighting is click-driven,
+not hover-driven, to avoid flashing the canvas.
+
+**IPC channels.** The renderer reaches the main process through seven typed channels declared in
+`src/shared/ipc.ts`:
+
+- `review:status` — returns the repository state, `HEAD` commit/tree, branch, Git changes, and
+  active operation.
+- `review:start` — begins a review for a project with a `traversalDepth` (`1`–`25`).
+- `review:cancel` — cancels a running review by `operationId`.
+- `review:summary` — returns the latest `ChangeReviewSummary` for the project.
+- `review:query` — returns a paginated `ReviewPage` for a section with optional filters.
+- `review:file-diff` — returns a bounded unified diff for a changed file.
+- `review:export` — opens a native save dialog and writes the current review as Markdown.
+
+**Freshness.** A review is **current**, **stale**, or **incompatible**:
+
+- **Current** — the working tree, `HEAD`, and configuration have not changed since the review
+  completed.
+- **Stale** — one of those changed. Stale reasons include `WORKING_TREE_CHANGED`,
+  `BASE_COMMIT_CHANGED`, `BASE_TREE_CHANGED`, `USER_CONFIGURATION_CHANGED`,
+  `EFFECTIVE_BASELINE_CHANGED`, `CONFIGURATION_UNAVAILABLE`, `NOT_A_GIT_REPO`, and `HEAD_UNBORN`.
+  Stale reviews remain viewable and exportable, but the workspace shows a warning.
+- **Incompatible** — the stored result is from a different TraceDeck version or schema. The review
+  is listed but cannot be queried or exported.
+
+A review that becomes stale during the run is discarded; the previous review is preserved.
+
+**Report formats.** The CLI can write reviews as `text`, `json`, `markdown`, or `html`. The GUI export is always Markdown.
+HTML requires an explicit `--review-output` path and contains no scripts, no external assets, and
+no absolute paths. Every report names the base as `HEAD` and the target as `working tree`, lists
+limitations, and uses project-relative paths.
+
+**Security invariants.** The review path is deterministic, offline, and never uses AI or a cloud
+service. It does not run arbitrary shell commands; Git is invoked as a spawned child process with a
+fixed argument list and a hardcoded `HEAD` ref. No absolute paths are written to reports or diff
+output. Symlinks and submodules are inventory-only and are not followed or materialized. File diffs
+are bounded by `MAX_REVIEW_DIFF_BYTES` (2 MiB) and `MAX_REVIEW_DIFF_LINES` (20,000 lines). The
+renderer never receives the full review; it requests paginated pages through `review:query`.
+
+**Honest limitations.** Large change sets, deep impact graphs, and large diffs may be truncated. The
+review reports `truncated` and `truncatedAtDepth` counts honestly. A changed file with no test file
+in the impact graph is reported as *no known test*, not as having no tests. Affected files are
+bounded by the selected traversal depth and are *possible impact*, not guaranteed runtime impact.
+The review compares the working tree with `HEAD` only; it cannot compare arbitrary commits or
+branches.
 
 ---
 
@@ -784,6 +870,7 @@ TraceDeck is not a git client. It shells out locally for read-only helpers plus 
 | Recent renames for a path | `git:renames` |
 | 90-day churn | `git:churn` |
 | Open the system mergetool | `git:mergetool` |
+|| 
 
 The session diff against the open snapshot is **not** git; it is a separate line-diff.
 
@@ -821,7 +908,22 @@ npm run scan -- [path] [--full] [--fail-on type,type] [--format text|json|sarif]
 | `--baseline` | Ignore fingerprints listed in that JSON file |
 | `--write-baseline` | Write current fingerprints as a baseline |
 
-`tsconfig.node.json` must include both `src/main/**/*.ts` and `src/cli/**/*.ts`.
+```bash
+npm run scan -- [path] --review [--review-format text|json|markdown|html] [--review-output <path>] [--review-depth <1-25>]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--review` | Compare the working tree with `HEAD` instead of running a normal scan |
+| `--review-format` | `text` (default), `json`, `markdown`, or `html` |
+| `--review-output` | Write the review report to a file. Required for `html` |
+| `--review-depth` | Maximum possible-impact path depth (`1`–`25`, default `5`) |
+
+Review mode cannot be combined with `--full`, `--fail-on`, `--format`, `--baseline`, or
+`--write-baseline`. A review and a normal scan are independent operations.
+
+`tsconfig.node.json` includes `src/main/**/*.ts` and `src/cli/**/*.ts`, and excludes
+`tests/unit/renderer/**` and `tests/e2e/**` because those are browser/Playwright tests.
 
 ---
 
@@ -861,6 +963,11 @@ architecture rule evaluation; SQLite migrations **and rollback**; repository ope
 payload validation; path-escape rejection; report rendering and HTML escaping; language-root
 rewrites; template and style analysis; community detection determinism; radial layout
 determinism at 3000 nodes; and a full end-to-end scan.
+
+Change review coverage includes: Git status capture, `HEAD` materialization, baseline/target snapshot
+extraction, comparison, impact traversal, query pagination and filtering, report rendering in all
+four formats, HTML escaping, relative-path output, freshness (`current`, `stale`, `incompatible`),
+cancellation during each phase, and cleanup of the verified temporary root.
 
 **Determinism is a test target, not an aspiration.** Every algorithm has a test asserting that
 input order does not change the result and that repeated runs agree.
@@ -913,6 +1020,10 @@ Report these in the app rather than hiding them.
 - **Risk percentile is in-repo rank**, not calibrated incident risk.
 - **Draft preview is single-file.** It reports what is wrong *in* the buffer, never that
   deleting an export here breaks three dependents.
+- **Change review needs `.tracedeck/` in `.gitignore`.** The CLI review writes `.tracedeck/cli.sqlite`
+  during its run; if that directory is untracked, Git reports it as changed and the review becomes
+  stale.
+- **Change review only compares the working tree with `HEAD`.** No arbitrary refs or branches.
 - **Parser failures without a line** stay limitations.
 - **The 360 view ceiling is `GRAPH_NODE_HARD_LIMIT`**, so "every file at once" currently means
   up to 5000.
@@ -989,7 +1100,8 @@ Things this product deliberately will not do. Each was considered and rejected.
 
 TraceDeck is an offline Electron and SQLite dependency-graph application — TypeScript Compiler
 API for JS/TS, tree-sitter for other languages and component templates, incremental scanning
-with a watcher and live draft preview, Monaco rather than a language server, local-only git
-helpers, deterministic community detection and a 3D branching view, a transparent change-impact
-score that always shows its arithmetic, and a standing refusal to guess, phone home, or claim
-more than static analysis can prove.
+with a watcher and live draft preview, a dedicated change-review workspace that compares the
+working tree with `HEAD`, Monaco rather than a language server, local-only git helpers,
+deterministic community detection and a 3D branching view, a transparent change-impact score that
+always shows its arithmetic, and a standing refusal to guess, phone home, or claim more than
+static analysis can prove.

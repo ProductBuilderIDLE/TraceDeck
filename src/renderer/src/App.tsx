@@ -21,6 +21,7 @@ import { ArchitectureRulesView } from './components/views/ArchitectureRules';
 import { MetricsView } from './components/views/Metrics';
 import { ReportsView } from './components/views/Reports';
 import { SettingsView } from './components/views/Settings';
+import { ChangeReview } from './components/views/ChangeReview';
 import { useUiStore, type ViewId } from './store/uiStore';
 import { useAppStore } from './store/appStore';
 import { invoke, subscribeToScanProgress } from './lib/ipc';
@@ -30,6 +31,7 @@ const VIEWS: Record<ViewId, () => JSX.Element> = {
   dashboard: Dashboard,
   graph: GraphView,
   explorer: Explorer,
+  'change-review': ChangeReview,
   cycles: CyclesView,
   'unused-exports': UnusedExportsView,
   architecture: ArchitectureRulesView,

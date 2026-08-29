@@ -8,6 +8,7 @@ export type ViewId =
   | 'dashboard'
   | 'graph'
   | 'explorer'
+  | 'change-review'
   | 'cycles'
   | 'unused-exports'
   | 'architecture'

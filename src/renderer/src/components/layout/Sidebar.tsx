@@ -21,6 +21,7 @@ import {
   BarChart3,
   Square,
   Unlink,
+  GitCompare,
 } from 'lucide-react';
 import { PRIVACY_NOTICE } from '@shared/constants';
 import { useUiStore, type ViewId } from '../../store/uiStore';
@@ -200,6 +201,7 @@ export function Sidebar(): JSX.Element {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'graph', label: 'Dependency graph', icon: GitBranch },
     { id: 'explorer', label: 'Explorer', icon: FolderTree },
+    { id: 'change-review', label: 'Change review', icon: GitCompare },
   ];
 
   const findings: NavItem[] = [

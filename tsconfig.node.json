@@ -31,5 +31,5 @@
     "electron.vite.config.ts",
     "vitest.config.ts"
   ],
-  "exclude": ["tests/fixtures/**"]
+  "exclude": ["tests/fixtures/**", "tests/unit/renderer/**", "tests/e2e/**"]
 }

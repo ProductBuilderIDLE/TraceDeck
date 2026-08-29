@@ -41,6 +41,8 @@ const SECTION_TITLES: Record<ReviewSection, string> = {
 
 const FILE_DIFF_PATH_LENGTH_LIMIT = 4096;
 
+let lastReviewProjectId: number | null = null;
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
 }
@@ -85,14 +87,10 @@ export function ChangeReview(): JSX.Element {
   const projectId = currentProject?.id ?? null;
   const reviewId = status?.latestReview?.reviewId ?? null;
 
-  const { showReviewGraph, showReviewEvidence, focusFinding, clearReviewContext } = useUiStore(
-    (state) => ({
-      showReviewGraph: state.showReviewGraph,
-      showReviewEvidence: state.showReviewEvidence,
-      focusFinding: state.focusFinding,
-      clearReviewContext: state.clearReviewContext,
-    }),
-  );
+  const showReviewGraph = useUiStore((state) => state.showReviewGraph);
+  const showReviewEvidence = useUiStore((state) => state.showReviewEvidence);
+  const focusFinding = useUiStore((state) => state.focusFinding);
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
 
   const [pageState, setPageState] = useState<PageState>({
     section: null,
@@ -119,16 +117,17 @@ export function ChangeReview(): JSX.Element {
 
   useEffect(() => {
     if (!projectId) {
+      lastReviewProjectId = null;
       resetForProject(0);
       clearReviewContext();
       return;
     }
+    if (lastReviewProjectId !== projectId) {
+      lastReviewProjectId = projectId;
+      resetForProject(projectId);
+    }
     clearReviewContext();
     void loadStatus(projectId);
-    return () => {
-      resetForProject(projectId);
-      clearReviewContext();
-    };
   }, [projectId, resetForProject, loadStatus, clearReviewContext]);
 
   useEffect(() => {

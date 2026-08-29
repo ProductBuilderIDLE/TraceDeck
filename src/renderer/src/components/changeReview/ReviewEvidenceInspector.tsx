@@ -55,12 +55,10 @@ export function ReviewEvidenceInspector({
   const project = useAppStore((state) => state.currentProject);
   const rules = useAppStore((state) => state.rules);
   const status = useReviewStore((state) => state.status);
-  const { clearReviewContext, openCode, focusFinding, setActiveView } = useUiStore((state) => ({
-    clearReviewContext: state.clearReviewContext,
-    openCode: state.openCode,
-    focusFinding: state.focusFinding,
-    setActiveView: state.setActiveView,
-  }));
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
+  const openCode = useUiStore((state) => state.openCode);
+  const focusFinding = useUiStore((state) => state.focusFinding);
+  const setActiveView = useUiStore((state) => state.setActiveView);
 
   const [diff, setDiff] = useState<ReviewFileDiff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);

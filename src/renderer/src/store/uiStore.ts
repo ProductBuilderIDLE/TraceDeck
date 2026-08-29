@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import type { ThemeId } from '@shared/theme';
-import type { EdgeType } from '@shared/types';
+import type { EdgeType, FindingType } from '@shared/types';
+import type { ReviewItem } from '@shared/changeReview';
 import { parseNodeId } from '@shared/nodeIds';
 import { applyTheme, loadStoredTheme, storeTheme } from '../lib/theme';
+import { reviewItemToGraphOverlay, type ReviewGraphOverlay } from '../lib/reviewGraph';
 
 export type ViewId =
   | 'dashboard'
@@ -52,6 +54,13 @@ interface UiState {
   highlightNodeIds: string[];
   graphSliceEdgeTypes: EdgeType[] | null;
 
+  /** Overlay produced from a review evidence item for the dependency graph. */
+  reviewGraphOverlay: ReviewGraphOverlay | null;
+  /** The review evidence currently shown in the inspector. */
+  reviewEvidence: ReviewItem | null;
+  /** One-shot state used to focus a specific finding by fingerprint. */
+  focusedFindingFingerprint: { fingerprint: string; findingType: FindingType } | null;
+
   setActiveView: (view: ViewId) => void;
   toggleInspector: () => void;
   selectNode: (nodeId: string | null) => void;
@@ -70,7 +79,25 @@ interface UiState {
   openPaths: (paths: readonly string[]) => void;
   setHighlightNodeIds: (nodeIds: string[]) => void;
   setGraphSliceEdgeTypes: (edgeTypes: EdgeType[] | null) => void;
+
+  showReviewGraph: (item: ReviewItem) => void;
+  showReviewEvidence: (item: ReviewItem) => void;
+  focusFinding: (fingerprint: string, findingType: FindingType) => void;
+  clearReviewContext: () => void;
 }
+
+const FINDING_TYPE_VIEWS: Record<FindingType, ViewId> = {
+  'circular-dependency': 'cycles',
+  'unused-export-candidate': 'unused-exports',
+  'architecture-violation': 'architecture',
+  'unresolved-import': 'unresolved',
+  'type-error': 'type-errors',
+  'syntax-error': 'syntax-errors',
+  'merge-conflict': 'merge-conflicts',
+  'todo-comment': 'todos',
+  'duplicate-code': 'duplicates',
+  'complexity-hotspot': 'complexity',
+};
 
 const initialTheme = loadStoredTheme();
 
@@ -90,6 +117,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   multiSelectedNodeIds: [],
   highlightNodeIds: [],
   graphSliceEdgeTypes: null,
+  reviewGraphOverlay: null,
+  reviewEvidence: null,
+  focusedFindingFingerprint: null,
 
   setActiveView: (activeView) => set({ activeView }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
@@ -107,7 +137,9 @@ export const useUiStore = create<UiState>((set, get) => ({
 
     // While the viewer is open it follows the selection, so clicking around the graph reads
     // like browsing a codebase rather than needing a second action every time.
-    if (parsed && parsed.type !== 'folder' && get().codeOpen) {
+    // Review evidence may describe baseline-only or deleted files, so the source viewer must not
+    // try to read them while the retained inspector is open.
+    if (parsed && parsed.type !== 'folder' && get().codeOpen && !get().reviewEvidence) {
       set({ codePath: parsed.path, codeLine: null });
     }
   },
@@ -174,6 +206,43 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setHighlightNodeIds: (highlightNodeIds) => set({ highlightNodeIds }),
   setGraphSliceEdgeTypes: (graphSliceEdgeTypes) => set({ graphSliceEdgeTypes }),
+
+  showReviewGraph: (item) => {
+    const overlay = reviewItemToGraphOverlay(item);
+    set({
+      activeView: 'graph',
+      reviewGraphOverlay: overlay,
+      reviewEvidence: item,
+      focusedFindingFingerprint: null,
+      inspectorOpen: true,
+    });
+  },
+
+  showReviewEvidence: (item) => {
+    set({
+      reviewGraphOverlay: null,
+      reviewEvidence: item,
+      focusedFindingFingerprint: null,
+      inspectorOpen: true,
+    });
+  },
+
+  focusFinding: (fingerprint, findingType) => {
+    set({
+      activeView: FINDING_TYPE_VIEWS[findingType],
+      reviewGraphOverlay: null,
+      reviewEvidence: null,
+      focusedFindingFingerprint: { fingerprint, findingType },
+    });
+  },
+
+  clearReviewContext: () =>
+    set({
+      reviewGraphOverlay: null,
+      reviewEvidence: null,
+      focusedFindingFingerprint: null,
+    }),
+
   toggleCode: () => {
     const { codeOpen, codePath, selectedNodeId } = get();
     if (codeOpen) {

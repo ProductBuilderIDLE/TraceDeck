@@ -16,6 +16,7 @@ import { useUiStore } from '../../store/uiStore';
 import { useAppStore } from '../../store/appStore';
 import { invoke } from '../../lib/ipc';
 import { Button, Caveat, PathLabel, RiskBadge, Spinner, Warning } from '../common/ui';
+import { ReviewEvidenceInspector } from '../changeReview/ReviewEvidenceInspector';
 
 function Section({
   title,
@@ -228,6 +229,7 @@ function GitExtras({
 
 export function Inspector(): JSX.Element {
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
+  const reviewEvidence = useUiStore((state) => state.reviewEvidence);
   const toggleInspector = useUiStore((state) => state.toggleInspector);
   const openCode = useUiStore((state) => state.openCode);
   const setHighlightNodeIds = useUiStore((state) => state.setHighlightNodeIds);
@@ -242,6 +244,16 @@ export function Inspector(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    if (reviewEvidence) {
+      // Review evidence is shown in its own inspector; never run current-only queries
+      // against SQLite for baseline-only or stale nodes.
+      setDetail(null);
+      setBlast(null);
+      setLoading(false);
+      setMessage(null);
+      return;
+    }
+
     if (!project || !selectedNodeId) {
       setDetail(null);
       setBlast(null);
@@ -274,7 +286,7 @@ export function Inspector(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [project, selectedNodeId, depth]);
+  }, [project, selectedNodeId, depth, reviewEvidence]);
 
   const parsed = selectedNodeId ? parseNodeId(selectedNodeId) : null;
 
@@ -326,7 +338,9 @@ export function Inspector(): JSX.Element {
         </div>
       </header>
 
-      {!selectedNodeId || !parsed ? (
+      {reviewEvidence ? (
+        <ReviewEvidenceInspector evidence={reviewEvidence} selectedNodeId={selectedNodeId} />
+      ) : !selectedNodeId || !parsed ? (
         <div className="flex-1 p-3">
           <p className="text-[11px] leading-relaxed text-ink-faint">
             Select a file or symbol to see its dependencies, dependents, blast radius, and change

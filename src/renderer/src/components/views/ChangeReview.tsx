@@ -8,6 +8,8 @@ import type {
 } from '@shared/changeReview';
 import { useReviewStore, type ReviewOperationState, type ReviewWorkspaceTab } from '../../store/reviewStore';
 import { useAppStore } from '../../store/appStore';
+import { useUiStore } from '../../store/uiStore';
+import type { ReviewItem } from '@shared/changeReview';
 import { ReviewHeader } from '../changeReview/ReviewHeader';
 import { ReviewTabs } from '../changeReview/ReviewTabs';
 import { ReviewFilters } from '../changeReview/ReviewFilters';
@@ -83,6 +85,15 @@ export function ChangeReview(): JSX.Element {
   const projectId = currentProject?.id ?? null;
   const reviewId = status?.latestReview?.reviewId ?? null;
 
+  const { showReviewGraph, showReviewEvidence, focusFinding, clearReviewContext } = useUiStore(
+    (state) => ({
+      showReviewGraph: state.showReviewGraph,
+      showReviewEvidence: state.showReviewEvidence,
+      focusFinding: state.focusFinding,
+      clearReviewContext: state.clearReviewContext,
+    }),
+  );
+
   const [pageState, setPageState] = useState<PageState>({
     section: null,
     page: null,
@@ -109,14 +120,22 @@ export function ChangeReview(): JSX.Element {
   useEffect(() => {
     if (!projectId) {
       resetForProject(0);
+      clearReviewContext();
       return;
     }
+    clearReviewContext();
     void loadStatus(projectId);
     return () => {
       resetForProject(projectId);
+      clearReviewContext();
     };
-  }, [projectId, resetForProject, loadStatus]);
+  }, [projectId, resetForProject, loadStatus, clearReviewContext]);
 
+  useEffect(() => {
+    clearReviewContext();
+  }, [reviewId, clearReviewContext]);
+
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!projectId || !reviewId || !hasCurrentReview || !activeSection) return;
     const generation = markQueryRequestGeneration();
@@ -131,6 +150,7 @@ export function ChangeReview(): JSX.Element {
     });
     void loadSection(activeSection, undefined, generation);
   }, [projectId, reviewId, selectedTab, filters, hasCurrentReview, activeSection]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   async function loadSection(section: ReviewSection, cursor: string | undefined, generation: number): Promise<void> {
     try {
@@ -154,6 +174,33 @@ export function ChangeReview(): JSX.Element {
         if (previous.requestGeneration !== generation) return previous;
         return { ...previous, loading: false, error: messageOf(err) };
       });
+    }
+  }
+
+  function handleDrillDown(item: ReviewItem) {
+    switch (item.itemType) {
+      case 'edge':
+      case 'cycle':
+      case 'affected-file':
+      case 'candidate-test':
+      case 'reachable-export':
+        showReviewGraph(item);
+        return;
+      case 'finding':
+        if (hasCurrentReview) {
+          focusFinding(item.finding.fingerprint, item.finding.findingType);
+        } else {
+          showReviewEvidence(item);
+        }
+        return;
+      case 'architecture-violation':
+      case 'file':
+      case 'no-known-test':
+      case 'limitation':
+        showReviewEvidence(item);
+        return;
+      default:
+        showReviewEvidence(item);
     }
   }
 
@@ -311,6 +358,7 @@ export function ChangeReview(): JSX.Element {
           onPrevious: handlePrevious,
           onDiff: handleDiff,
           canDiff: hasCurrentReview,
+          onDrillDown: handleDrillDown,
           onCloseDiff: () => setDiff(null),
         })}
       </div>
@@ -332,11 +380,12 @@ interface TabContentProps {
   onPrevious: () => void;
   onDiff: (relativePath: string) => void;
   canDiff: boolean;
+  onDrillDown: (item: ReviewItem) => void;
   onCloseDiff: () => void;
 }
 
 function tabContent(props: TabContentProps): JSX.Element {
-  const { tab, hasCurrentReview, operation, summary, activeSection, pageState, diff, filters, onFiltersChange, onNext, onPrevious, onDiff, canDiff, onCloseDiff } = props;
+  const { tab, hasCurrentReview, operation, summary, activeSection, pageState, diff, filters, onFiltersChange, onNext, onPrevious, onDiff, canDiff, onDrillDown, onCloseDiff } = props;
 
   if (!hasCurrentReview) {
     return (
@@ -393,6 +442,7 @@ function tabContent(props: TabContentProps): JSX.Element {
           onPrevious={onPrevious}
           onDiff={onDiff}
           canDiff={canDiff}
+          onDrillDown={onDrillDown}
           loading={pageState.loading}
         />
       )}

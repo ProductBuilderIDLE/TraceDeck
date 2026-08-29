@@ -15,6 +15,7 @@ interface ReviewPageProps {
   onPrevious?: () => void;
   onDiff?: (relativePath: string) => void;
   canDiff?: boolean;
+  onDrillDown?: (item: ReviewItem) => void;
   loading?: boolean;
 }
 
@@ -73,6 +74,7 @@ export function ReviewPage({
   onPrevious,
   onDiff,
   canDiff = true,
+  onDrillDown,
   loading = false,
 }: ReviewPageProps): JSX.Element {
   const items = page.items ?? [];
@@ -138,8 +140,18 @@ export function ReviewPage({
       )}
       <ul className="space-y-2" role="list">
         {items.map((item) => (
-          <li key={item.stableKey} className="rounded-md border border-edge bg-surface-0 p-2.5">
-            <ReviewItemRow item={item} onDiff={onDiff} canDiff={canDiff} />
+          <li
+            key={item.stableKey}
+            data-review-stable-key={item.stableKey}
+            tabIndex={-1}
+            className="rounded-md border border-edge bg-surface-0 p-2.5"
+          >
+            <ReviewItemRow
+              item={item}
+              onDiff={onDiff}
+              canDiff={canDiff}
+              onDrillDown={onDrillDown}
+            />
           </li>
         ))}
       </ul>
@@ -147,7 +159,49 @@ export function ReviewPage({
   );
 }
 
-function ReviewItemRow({
+interface ReviewItemRowProps {
+  item: ReviewItem;
+  onDiff?: (relativePath: string) => void;
+  canDiff: boolean;
+  onDrillDown?: (item: ReviewItem) => void;
+}
+
+function drilldownLabel(item: ReviewItem): string {
+  switch (item.itemType) {
+    case 'edge':
+    case 'cycle':
+    case 'affected-file':
+    case 'candidate-test':
+    case 'reachable-export':
+      return 'Graph';
+    case 'finding':
+      return 'Find';
+    case 'architecture-violation':
+      return 'Rule';
+    default:
+      return 'Details';
+  }
+}
+
+function ReviewItemRow({ item, onDiff, canDiff, onDrillDown }: ReviewItemRowProps): JSX.Element {
+  return (
+    <div className="space-y-1.5">
+      <ReviewItemContent item={item} onDiff={onDiff} canDiff={canDiff} />
+      {onDrillDown && (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onDrillDown(item)}
+          aria-label={`${drilldownLabel(item)} for ${item.stableKey}`}
+        >
+          {drilldownLabel(item)}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function ReviewItemContent({
   item,
   onDiff,
   canDiff,

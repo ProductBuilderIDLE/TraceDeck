@@ -88,6 +88,10 @@ function readPalette() {
     dependent: tokenColor('brand'),
     edge: tokenColor('surface-4'),
     unresolved: tokenColor('ink-faint'),
+    added: tokenColor('risk-low'),
+    removed: tokenColor('risk-crit'),
+    baseline: tokenColor('ink-muted'),
+    target: tokenColor('brand'),
   };
 }
 
@@ -206,6 +210,26 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
     { selector: 'edge.faded', style: { opacity: 0.04 } },
     { selector: 'edge.blast', style: { width: 2.4, 'line-color': colors.selected, 'target-arrow-color': colors.selected, 'line-opacity': 1 } },
     { selector: 'edge.hidden', style: { display: 'none' } },
+    {
+      selector: 'node.added',
+      style: { 'border-color': colors.added, 'background-color': colors.added, 'background-opacity': 1 },
+    },
+    {
+      selector: 'node.removed',
+      style: { 'border-color': colors.removed, 'background-color': colors.removed, 'background-opacity': 1 },
+    },
+    { selector: 'node.baseline', style: { 'border-color': colors.baseline, 'border-style': 'dashed' } },
+    { selector: 'node.target', style: { 'border-color': colors.target } },
+    { selector: 'edge.added', style: { 'line-color': colors.added, 'target-arrow-color': colors.added } },
+    {
+      selector: 'edge.removed',
+      style: { 'line-color': colors.removed, 'target-arrow-color': colors.removed, 'line-style': 'dashed' },
+    },
+    {
+      selector: 'edge.baseline',
+      style: { 'line-color': colors.baseline, 'target-arrow-color': colors.baseline, 'line-style': 'dashed' },
+    },
+    { selector: 'edge.target', style: { 'line-color': colors.target, 'target-arrow-color': colors.target } },
   ];
 }
 
@@ -241,10 +265,19 @@ function layoutOptions(name: LayoutName, nodeCount: number): LayoutOptions {
   return { ...base, name: 'breadthfirst', directed: true, spacingFactor: 1.1 } as LayoutOptions;
 }
 
+function reviewClassFor(meta: { side?: 'baseline' | 'target'; delta?: 'added' | 'removed' }): string | undefined {
+  const classes: string[] = [];
+  if (meta.side) classes.push(meta.side);
+  if (meta.delta) classes.push(meta.delta);
+  return classes.length > 0 ? classes.join(' ') : undefined;
+}
+
 function toElements(
   payload: GraphPayload,
   dark: boolean,
   communityById: ReadonlyMap<string, number>,
+  nodeClasses?: ReadonlyMap<string, string | undefined>,
+  edgeClasses?: ReadonlyMap<string, string | undefined>,
 ): ElementDefinition[] {
   const degree = new Map<string, number>();
   const graphEdges = payload.edges ?? [];
@@ -274,6 +307,7 @@ function toElements(
         inCycle: node.inCycle ? 1 : 0,
         isEntry: node.isEntryPoint ? 1 : 0,
       },
+      classes: nodeClasses?.get(node.id),
     };
   });
 
@@ -286,6 +320,7 @@ function toElements(
       unresolved: edge.unresolved ? 1 : 0,
       typeOnly: edge.typeOnly ? 1 : 0,
     },
+    classes: edgeClasses?.get(edge.id),
   }));
 
   return [...nodes, ...edges];
@@ -359,6 +394,8 @@ export function GraphView(): JSX.Element {
   const highlightNodeIds = useUiStore((state) => state.highlightNodeIds);
   const graphSliceEdgeTypes = useUiStore((state) => state.graphSliceEdgeTypes);
   const setGraphSliceEdgeTypes = useUiStore((state) => state.setGraphSliceEdgeTypes);
+  const reviewGraphOverlay = useUiStore((state) => state.reviewGraphOverlay);
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
   const themeRevision = useUiStore((state) => state.themeRevision);
   const themeId = useUiStore((state) => state.theme);
   const isDark = !themeId.includes('light');
@@ -386,16 +423,23 @@ export function GraphView(): JSX.Element {
 
   // Only the focus root belongs in the query key. Selecting a node while focus mode is off
   // must not refetch or re-lay-out the graph — that was what made clicking feel broken.
-  const focusRoot = focusMode ? selectedNodeId : null;
+  const focusRoot = focusMode && !reviewGraphOverlay ? selectedNodeId : null;
+
+  const effectivePayload = useMemo(
+    () => reviewGraphOverlay?.payload ?? payload,
+    [reviewGraphOverlay, payload],
+  );
+  const effectiveMode: '2d' | '360' = reviewGraphOverlay ? '2d' : mode;
+  const isOverlayActive = Boolean(reviewGraphOverlay);
 
   const folders = useMemo(() => {
     const set = new Set<string>();
-    for (const node of payload?.nodes ?? []) set.add(folderOf(node.path));
+    for (const node of effectivePayload?.nodes ?? []) set.add(folderOf(node.path));
     return [...set].sort();
-  }, [payload]);
+  }, [effectivePayload]);
 
   const load = useCallback(async () => {
-    if (!project) return;
+    if (!project || reviewGraphOverlay) return;
     setLoading(true);
     try {
       const result = await invoke('graph:query', {
@@ -405,7 +449,7 @@ export function GraphView(): JSX.Element {
         // The soft limit exists because canvas hit-testing degrades past it. The 360 view
         // draws through WebGL and does not share that ceiling, so it asks for the hard limit
         // and shows more of the project at once.
-        nodeLimit: mode === '360' ? GRAPH_NODE_HARD_LIMIT : GRAPH_NODE_SOFT_LIMIT,
+        nodeLimit: effectiveMode === '360' ? GRAPH_NODE_HARD_LIMIT : GRAPH_NODE_SOFT_LIMIT,
         ...(folderPrefix ? { folderPrefix } : {}),
         ...(focusRoot ? { focusNodeId: focusRoot, focusDepth: 2 } : {}),
         ...(graphSliceEdgeTypes?.includes('call')
@@ -418,11 +462,12 @@ export function GraphView(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes, mode]);
+  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes, effectiveMode, reviewGraphOverlay]);
 
   useEffect(() => {
+    if (reviewGraphOverlay) return;
     void load();
-  }, [load, stats]);
+  }, [load, stats, reviewGraphOverlay]);
 
   useEffect(() => {
     if (!containerRef.current || cyRef.current) return;
@@ -442,6 +487,11 @@ export function GraphView(): JSX.Element {
     });
 
     cy.on('tap', 'node', (event) => {
+      const store = useUiStore.getState();
+      if (store.reviewGraphOverlay) {
+        store.clearMultiSelect();
+        return;
+      }
       const id = event.target.id() as string;
       const original = event.originalEvent as MouseEvent | undefined;
       // metaKey so the shortcut works the same way on macOS.
@@ -486,6 +536,10 @@ export function GraphView(): JSX.Element {
     });
 
     cy.on('boxend', () => {
+      if (useUiStore.getState().reviewGraphOverlay) {
+        cy.nodes(':selected').unselect();
+        return;
+      }
       const caught = cy.nodes(':selected');
       const ids = caught.map((node) => node.id() as string);
       cy.nodes().unselect();
@@ -508,12 +562,18 @@ export function GraphView(): JSX.Element {
     });
 
     cy.on('dbltap', 'node', (event) => {
+      if (useUiStore.getState().reviewGraphOverlay) return;
       const parsed = parseNodeId(event.target.id() as string);
       if (parsed && parsed.type !== 'folder') openCode(parsed.path);
     });
     cy.on('tap', (event) => {
       if (event.target !== cy || sweepJustEnded) return;
-      useUiStore.getState().clearMultiSelect();
+      const store = useUiStore.getState();
+      if (store.reviewGraphOverlay) {
+        store.clearMultiSelect();
+        return;
+      }
+      store.clearMultiSelect();
       selectNode(null);
     });
     // Hovering deliberately does nothing. Highlighting a neighbourhood on mouseover faded
@@ -541,14 +601,25 @@ export function GraphView(): JSX.Element {
   // Rebuild elements only when the data actually changes.
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !payload) return;
+    if (!cy || !effectivePayload) return;
+
+    const nodeClasses = reviewGraphOverlay
+      ? new Map<string, string | undefined>(
+          Object.entries(reviewGraphOverlay.nodeMeta).map(([id, meta]) => [id, reviewClassFor(meta)]),
+        )
+      : undefined;
+    const edgeClasses = reviewGraphOverlay
+      ? new Map<string, string | undefined>(
+          Object.entries(reviewGraphOverlay.edgeMeta).map(([id, meta]) => [id, reviewClassFor(meta)]),
+        )
+      : undefined;
 
     cy.batch(() => {
       cy.elements().remove();
-      const sourceEdges = payload.edges ?? [];
-      const sourceNodes = payload.nodes ?? [];
+      const sourceEdges = effectivePayload.edges ?? [];
+      const sourceNodes = effectivePayload.nodes ?? [];
       const filtered: GraphPayload = {
-        ...payload,
+        ...effectivePayload,
         edges: sourceEdges.filter((edge) => {
           if (hideTypeOnly && edge.typeOnly) return false;
           return true;
@@ -571,11 +642,11 @@ export function GraphView(): JSX.Element {
         filtered.edges,
       );
       setCommunities(detected.communities);
-      cy.add(toElements(filtered, isDark, detected.communityById));
+      cy.add(toElements(filtered, isDark, detected.communityById, nodeClasses, edgeClasses));
     });
-    cy.layout(layoutOptions(layout, (payload.nodes ?? []).length)).run();
+    cy.layout(layoutOptions(layout, (effectivePayload.nodes ?? []).length)).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload, layout, hideTypeOnly, collapseBarrels]);
+  }, [effectivePayload, layout, hideTypeOnly, collapseBarrels, reviewGraphOverlay, isDark]);
 
   // Rings the gathered nodes. Kept apart from the selection highlight below so that adding
   // to the set does not recompute a neighbourhood on every ctrl-click.
@@ -592,7 +663,7 @@ export function GraphView(): JSX.Element {
         else node.removeClass('multi');
       });
     });
-  }, [multiSelectedNodeIds, payload]);
+  }, [multiSelectedNodeIds, effectivePayload]);
 
   // Highlighting is a pure class swap: no refetch, no relayout, viewport untouched.
   useEffect(() => {
@@ -617,7 +688,7 @@ export function GraphView(): JSX.Element {
       incoming.addClass('incoming');
       outgoing.addClass('outgoing');
     });
-  }, [selectedNodeId, payload]);
+  }, [selectedNodeId, effectivePayload]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -635,7 +706,7 @@ export function GraphView(): JSX.Element {
         edge.addClass('blast');
       }
     });
-  }, [highlightNodeIds, payload]);
+  }, [highlightNodeIds, effectivePayload]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -666,7 +737,7 @@ export function GraphView(): JSX.Element {
     return () => {
       cy.off('pan zoom layoutstop', update);
     };
-  }, [payload, layout]);
+  }, [effectivePayload, layout]);
 
   // Dim non-matching nodes as you type rather than yanking the viewport around.
   useEffect(() => {
@@ -686,7 +757,7 @@ export function GraphView(): JSX.Element {
         .filter((edge) => !matches.contains(edge.source()) || !matches.contains(edge.target()))
         .addClass('hidden');
     });
-  }, [search, payload]);
+  }, [search, effectivePayload]);
 
   // Zooms about the middle of the viewport. Animating with a `center` option fought the zoom
   // and barely moved the view, so this applies the level directly.
@@ -721,10 +792,12 @@ export function GraphView(): JSX.Element {
             <button
               key={id}
               type="button"
+              disabled={isOverlayActive}
               onClick={() => setMode(id)}
               className={clsx(
                 'px-2 py-1 text-[11px]',
-                mode === id ? 'bg-brand text-surface-0' : 'bg-surface-2 text-ink-muted',
+                isOverlayActive ? 'opacity-50' : '',
+                effectiveMode === id ? 'bg-brand text-surface-0' : 'bg-surface-2 text-ink-muted',
               )}
             >
               {label}
@@ -759,6 +832,7 @@ export function GraphView(): JSX.Element {
         <select
           value={folderPrefix}
           onChange={(event) => setFolderPrefix(event.target.value)}
+          disabled={isOverlayActive}
           className="max-w-36 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[11px] text-ink focus:border-brand focus:outline-none"
         >
           <option value="">All folders</option>
@@ -782,6 +856,7 @@ export function GraphView(): JSX.Element {
                   return next.size === 0 ? new Set([filter.id]) : next;
                 })
               }
+              disabled={isOverlayActive}
               className={clsx(
                 'rounded px-1.5 py-0.5 text-[10px] transition-colors',
                 edgeTypes.has(filter.id)
@@ -799,6 +874,7 @@ export function GraphView(): JSX.Element {
             type="checkbox"
             checked={includeUnresolved}
             onChange={(event) => setIncludeUnresolved(event.target.checked)}
+            disabled={isOverlayActive}
             className="accent-brand"
           />
           Unresolved
@@ -808,6 +884,7 @@ export function GraphView(): JSX.Element {
             type="checkbox"
             checked={hideTypeOnly}
             onChange={(event) => setHideTypeOnly(event.target.checked)}
+            disabled={isOverlayActive}
             className="accent-brand"
           />
           Hide type-only
@@ -817,12 +894,13 @@ export function GraphView(): JSX.Element {
             type="checkbox"
             checked={collapseBarrels}
             onChange={(event) => setCollapseBarrels(event.target.checked)}
+            disabled={isOverlayActive}
             className="accent-brand"
           />
           Collapse barrels
         </label>
         {graphSliceEdgeTypes && (
-          <Button size="sm" variant="primary" onClick={() => setGraphSliceEdgeTypes(null)}>
+          <Button size="sm" variant="primary" onClick={() => setGraphSliceEdgeTypes(null)} disabled={isOverlayActive}>
             Clear call slice
           </Button>
         )}
@@ -836,7 +914,7 @@ export function GraphView(): JSX.Element {
         <Button
           size="sm"
           variant="ghost"
-          disabled={viewName.trim().length === 0}
+          disabled={viewName.trim().length === 0 || isOverlayActive}
           onClick={() => {
             const next: SavedGraphView[] = [
               {
@@ -860,6 +938,7 @@ export function GraphView(): JSX.Element {
           <select
             className="max-w-32 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[11px] text-ink"
             defaultValue=""
+            disabled={isOverlayActive}
             onChange={(event) => {
               const view = savedViews.find((entry) => entry.name === event.target.value);
               event.currentTarget.selectedIndex = 0;
@@ -884,7 +963,7 @@ export function GraphView(): JSX.Element {
           size="sm"
           variant={focusMode ? 'primary' : 'ghost'}
           onClick={() => setFocusMode((value) => !value)}
-          disabled={!selectedNodeId}
+          disabled={!selectedNodeId || isOverlayActive}
           title="Show only the neighbourhood of the selected node"
         >
           <Crosshair size={11} />
@@ -894,7 +973,7 @@ export function GraphView(): JSX.Element {
         <Button
           size="sm"
           variant="ghost"
-          disabled={!selectedPath}
+          disabled={!selectedPath || isOverlayActive}
           onClick={() => selectedPath && openCode(selectedPath)}
           title="Open this file's source beside the graph"
         >
@@ -949,16 +1028,29 @@ export function GraphView(): JSX.Element {
             <Download size={11} />
             SVG
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => void load()} title="Reload">
+          <Button size="sm" variant="ghost" onClick={() => void load()} title="Reload" disabled={isOverlayActive}>
             <RefreshCcw size={11} />
           </Button>
         </div>
       </div>
 
-      {payload?.truncated && (
+      {reviewGraphOverlay && (
+        <div className="flex items-center justify-between gap-3 border-b border-edge bg-surface-1 px-3 py-2">
+          <p className="text-[11px] text-ink-muted">
+            <span className="font-medium text-ink">Review evidence</span>
+            {' · '}
+            {reviewGraphOverlay.title}
+          </p>
+          <Button size="sm" variant="ghost" onClick={clearReviewContext}>
+            Clear
+          </Button>
+        </div>
+      )}
+
+      {effectivePayload?.truncated && (
         <div className="px-3 pt-2">
           <Warning>
-            Showing the {(payload.nodes ?? []).length} most connected of {payload.totalNodeCount} files.
+            Showing the {(effectivePayload.nodes ?? []).length} most connected of {effectivePayload.totalNodeCount} files.
             Narrow by folder, or select a node and turn on Focus, to see a complete subgraph.
           </Warning>
         </div>
@@ -967,18 +1059,18 @@ export function GraphView(): JSX.Element {
       <div className="relative min-h-0 flex-1">
         {/* Cytoscape stays mounted while the 360 view is open. Its instance is bound to this
             element, so unmounting would tear down and rebuild the graph on every toggle. */}
-        <div ref={containerRef} className={clsx('absolute inset-0', mode === '360' && 'invisible')} />
+        <div ref={containerRef} className={clsx('absolute inset-0', effectiveMode === '360' && 'invisible')} />
 
-        {mode === '360' && payload ? (
+        {effectiveMode === '360' && effectivePayload ? (
           <div className="absolute inset-0">
-            <SpaceCanvas payload={payload} />
+            <SpaceCanvas payload={effectivePayload} />
           </div>
         ) : null}
 
         <div
           className={clsx(
             'pointer-events-none absolute bottom-3 right-3 h-24 w-36 overflow-hidden rounded-md border border-edge bg-surface-1/95',
-            mode === '360' && 'hidden',
+            effectiveMode === '360' && 'hidden',
           )}
         >
           {minimap && (
@@ -1008,7 +1100,7 @@ export function GraphView(): JSX.Element {
         <div
           className={clsx(
             'pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2',
-            mode === '360' && 'hidden',
+            effectiveMode === '360' && 'hidden',
           )}
         >
           <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">

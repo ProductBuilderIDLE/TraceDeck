@@ -82,6 +82,15 @@ vi.mock('../../../src/renderer/src/store/reviewStore', () => ({
   useReviewStore: () => reviewState,
 }));
 
+vi.mock('../../../src/renderer/src/store/uiStore', () => ({
+  useUiStore: () => ({
+    showReviewGraph: vi.fn(),
+    showReviewEvidence: vi.fn(),
+    focusFinding: vi.fn(),
+    clearReviewContext: vi.fn(),
+  }),
+}));
+
 describe('ChangeReview shell', () => {
   it('announces the workspace with aria-live and explains no project', () => {
     appState.currentProject = null;

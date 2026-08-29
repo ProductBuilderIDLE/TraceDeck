@@ -9,6 +9,7 @@ import type {
   ScanProgress,
 } from '@shared/types';
 import { invoke } from '../lib/ipc';
+import { ruleFingerprint } from '../lib/ruleFingerprint';
 
 interface AppState {
   projects: Project[];
@@ -216,7 +217,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = get().currentProject;
     if (!project) return;
     try {
-      set({ rules: await invoke('rules:list', { projectId: project.id }) });
+      const rules = await invoke('rules:list', { projectId: project.id });
+      const rulesWithFingerprint = await Promise.all(
+        rules.map(async (rule) => ({ ...rule, fingerprint: await ruleFingerprint(rule) })),
+      );
+      set({ rules: rulesWithFingerprint });
     } catch (error) {
       set({ error: messageOf(error) });
     }

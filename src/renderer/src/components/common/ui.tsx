@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import type { ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { AlertTriangle, Info } from 'lucide-react';
 import type { Severity } from '@shared/types';
 
@@ -11,14 +11,10 @@ export function Button({
   disabled,
   title,
   className,
-}: {
-  children: ReactNode;
-  onClick?: () => void;
+  ...rest
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'size'> & {
   variant?: 'default' | 'primary' | 'ghost' | 'danger';
   size?: 'sm' | 'md';
-  disabled?: boolean;
-  title?: string;
-  className?: string;
 }): JSX.Element {
   return (
     <button
@@ -36,6 +32,7 @@ export function Button({
         variant === 'danger' && 'border-risk-crit/40 bg-transparent text-risk-crit hover:bg-risk-crit/10',
         className,
       )}
+      {...rest}
     >
       {children}
     </button>

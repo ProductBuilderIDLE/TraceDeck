@@ -49,11 +49,13 @@ function buildState(state: Record<string, unknown>): Record<string, unknown> {
     filters,
     selectedDepth: (state.selectedDepth as number) ?? 5,
     requestGeneration: 0,
+    queryRequestGeneration: 0,
     loading: (state.loading as boolean) ?? false,
     error: (state.error as string | null) ?? null,
     cancellationRequested: (state.cancellationRequested as boolean) ?? false,
     loadStatus: vi.fn(),
     loadSummary: vi.fn(),
+    loadPage: vi.fn(),
     startReview: vi.fn(),
     cancelReview: vi.fn(),
     selectTab: vi.fn(),
@@ -61,6 +63,7 @@ function buildState(state: Record<string, unknown>): Record<string, unknown> {
     setDepth: vi.fn(),
     resetForProject: vi.fn(),
     markRequestGeneration: vi.fn(() => 0),
+    markQueryRequestGeneration: vi.fn(() => 0),
   };
 }
 

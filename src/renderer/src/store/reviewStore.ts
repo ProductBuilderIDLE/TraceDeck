@@ -3,8 +3,10 @@ import type {
   ChangeReviewSummary,
   ReviewFilters,
   ReviewOperationPhase,
+  ReviewPage,
   ReviewStatus,
 } from '@shared/changeReview';
+import type { ReviewQueryRequest } from '@shared/ipc';
 import { invoke } from '../lib/ipc';
 
 export type ReviewWorkspaceTab =
@@ -31,6 +33,7 @@ interface ReviewState {
   filters: ReviewFilters;
   selectedDepth: number;
   requestGeneration: number;
+  queryRequestGeneration: number;
   loading: boolean;
   error: string | null;
   cancellationRequested: boolean;
@@ -39,11 +42,13 @@ interface ReviewState {
   loadSummary: (projectId: number) => Promise<void>;
   startReview: (projectId: number, traversalDepth: number) => Promise<void>;
   cancelReview: (projectId: number, operationId: string) => Promise<void>;
+  loadPage: (request: ReviewQueryRequest, generation: number) => Promise<ReviewPage>;
   selectTab: (tab: ReviewWorkspaceTab) => void;
   setFilters: (filters: ReviewFilters) => void;
   setDepth: (depth: number) => void;
   resetForProject: (projectId: number) => void;
   markRequestGeneration: () => number;
+  markQueryRequestGeneration: () => number;
 }
 
 const POLL_INTERVAL_MS = 500;
@@ -95,6 +100,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
     filters: DEFAULT_FILTERS,
     selectedDepth: 5,
     requestGeneration: 0,
+    queryRequestGeneration: 0,
     loading: false,
     error: null,
     cancellationRequested: false,
@@ -105,9 +111,16 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       return next;
     },
 
+    markQueryRequestGeneration: () => {
+      const next = get().queryRequestGeneration + 1;
+      set({ queryRequestGeneration: next });
+      return next;
+    },
+
     resetForProject: () => {
       clearPoll();
-      const next = get().requestGeneration + 1;
+      const nextRequest = get().requestGeneration + 1;
+      const nextQuery = get().queryRequestGeneration + 1;
       set({
         status: null,
         summary: null,
@@ -115,7 +128,8 @@ export const useReviewStore = create<ReviewState>((set, get) => {
         selectedTab: 'overview',
         filters: DEFAULT_FILTERS,
         selectedDepth: 5,
-        requestGeneration: next,
+        requestGeneration: nextRequest,
+        queryRequestGeneration: nextQuery,
         loading: false,
         error: null,
         cancellationRequested: false,
@@ -182,6 +196,17 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       } catch (error) {
         set({ error: messageOf(error), cancellationRequested: false });
       }
+    },
+
+    loadPage: async (request, generation) => {
+      if (generation !== get().queryRequestGeneration) {
+        throw new Error('Stale review query');
+      }
+      const page = await invoke('review:query', request);
+      if (generation !== get().queryRequestGeneration) {
+        throw new Error('Stale review query');
+      }
+      return page;
     },
 
     selectTab: (selectedTab) => set({ selectedTab }),

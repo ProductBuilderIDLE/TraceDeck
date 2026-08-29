@@ -124,3 +124,15 @@ export const MAX_SOURCE_LINES = 8000;
 export const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
 export const PRIVACY_NOTICE = 'Analysis stays on this device.';
+
+export const REVIEW_RESULT_SCHEMA_VERSION = 1;
+export const MAX_REVIEW_DETAIL_ITEMS = 2000;
+export const DEFAULT_REVIEW_PAGE_SIZE = 100;
+export const MAX_REVIEW_PAGE_SIZE = 500;
+export const MAX_REVIEW_DIFF_BYTES = 2 * 1024 * 1024;
+export const MAX_REVIEW_DIFF_LINES = 20000;
+export const MAX_REVIEW_BASELINE_ENTRIES = 100000;
+export const MAX_REVIEW_BASELINE_BYTES = 2 * 1024 * 1024 * 1024;
+export const REVIEW_TEMP_PREFIX = 'tracedeck-review-';
+export const REVIEW_TEMP_MARKER = '.tracedeck-review-marker';
+export const REVIEW_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;

@@ -42,6 +42,17 @@ export interface ReviewGitChange {
   language: string | null;
 }
 
+export interface ReviewFileDiff {
+  oldPath: string | null;
+  newPath: string | null;
+  diffText: string;
+  truncated: boolean;
+  returnedBytes: number;
+  returnedLines: number;
+  omittedBytes: number;
+  omittedLines: number;
+}
+
 export interface ReviewStatus {
   projectId: number;
   repositoryState: ReviewRepositoryState;

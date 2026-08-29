@@ -15,7 +15,9 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import type { EdgeType, NodeType, GraphPayload } from '@shared/types';
-import { GRAPH_NODE_SOFT_LIMIT } from '@shared/constants';
+import { SpaceCanvas } from './SpaceCanvas';
+import { detectCommunities, type Community } from '@shared/communities';
+import { GRAPH_NODE_HARD_LIMIT, GRAPH_NODE_SOFT_LIMIT } from '@shared/constants';
 import { parseNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
@@ -58,17 +60,14 @@ function folderOf(path: string): string {
   return segments[0] as string;
 }
 
-function hueFor(folder: string): number {
-  let hash = 0;
-  for (let index = 0; index < folder.length; index += 1) {
-    hash = (hash * 31 + folder.charCodeAt(index)) % 360;
-  }
-  // Golden-angle spread keeps neighbouring folder names visually far apart.
-  return (hash * 137.508) % 360;
-}
-
-function folderColor(folder: string, dark: boolean): string {
-  const hue = Math.round(hueFor(folder));
+/**
+ * Colours a node by the community it belongs to rather than the folder it sits in.
+ *
+ * Hues step by the golden angle so that consecutive communities land far apart on the wheel
+ * and stay distinguishable well past the handful of groups a folder palette could separate.
+ */
+function communityColor(community: number, dark: boolean): string {
+  const hue = Math.round((community * 137.508) % 360);
   // Commas, not spaces: Cytoscape cannot parse the modern hsl() syntax.
   return dark ? `hsl(${hue}, 62%, 58%)` : `hsl(${hue}, 65%, 45%)`;
 }
@@ -129,6 +128,18 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       style: { 'border-color': colors.cycle, 'border-width': 3, 'border-style': 'double' },
     },
     {
+      // A gathered node keeps its community colour and gains a ring, so a multi-selection
+      // reads as "these ones" without hiding what the colours were saying.
+      selector: 'node.multi',
+      style: {
+        'border-color': colors.selected,
+        'border-width': 4,
+        'border-style': 'solid',
+        'border-opacity': 1,
+        'z-index': 28,
+      },
+    },
+    {
       selector: 'node.selected',
       style: {
         'background-color': colors.selected,
@@ -152,7 +163,6 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
     },
     { selector: 'node.faded', style: { opacity: 0.12 } },
     { selector: 'node.blast', style: { 'border-color': colors.selected, 'border-width': 4, 'z-index': 25 } },
-    { selector: 'node.held', style: { 'border-width': 3, 'background-opacity': 0.95, 'z-index': 22 } },
     { selector: 'node.hidden', style: { display: 'none' } },
     {
       selector: 'edge',
@@ -231,7 +241,11 @@ function layoutOptions(name: LayoutName, nodeCount: number): LayoutOptions {
   return { ...base, name: 'breadthfirst', directed: true, spacingFactor: 1.1 } as LayoutOptions;
 }
 
-function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
+function toElements(
+  payload: GraphPayload,
+  dark: boolean,
+  communityById: ReadonlyMap<string, number>,
+): ElementDefinition[] {
   const degree = new Map<string, number>();
   const graphEdges = payload.edges ?? [];
   const graphNodes = payload.nodes ?? [];
@@ -245,6 +259,7 @@ function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
     // Area grows with connectivity but is damped, so one hub cannot dwarf everything else.
     const size = Math.round(Math.min(60, 18 + Math.sqrt(connections) * 7));
     const folder = folderOf(node.path ?? '');
+    const community = communityById.get(node.id) ?? 0;
 
     return {
       data: {
@@ -252,7 +267,8 @@ function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
         label: node.label,
         path: node.path,
         folder,
-        color: folderColor(folder, dark),
+        community,
+        color: communityColor(community, dark),
         size,
         degree: connections,
         inCycle: node.inCycle ? 1 : 0,
@@ -337,6 +353,7 @@ export function GraphView(): JSX.Element {
   const project = useAppStore((state) => state.currentProject);
   const stats = useAppStore((state) => state.stats);
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
+  const multiSelectedNodeIds = useUiStore((state) => state.multiSelectedNodeIds);
   const selectNode = useUiStore((state) => state.selectNode);
   const openCode = useUiStore((state) => state.openCode);
   const highlightNodeIds = useUiStore((state) => state.highlightNodeIds);
@@ -347,6 +364,8 @@ export function GraphView(): JSX.Element {
   const isDark = !themeId.includes('light');
 
   const [payload, setPayload] = useState<GraphPayload | null>(null);
+  const [mode, setMode] = useState<'2d' | '360'>('2d');
+  const [communities, setCommunities] = useState<Community[]>([]);
   const [loading, setLoading] = useState(false);
   const [layout, setLayout] = useState<LayoutName>('fcose');
   const [edgeTypes, setEdgeTypes] = useState<Set<EdgeType>>(
@@ -383,7 +402,10 @@ export function GraphView(): JSX.Element {
         projectId: project.id,
         edgeTypes: graphSliceEdgeTypes ?? [...edgeTypes],
         includeUnresolved,
-        nodeLimit: GRAPH_NODE_SOFT_LIMIT,
+        // The soft limit exists because canvas hit-testing degrades past it. The 360 view
+        // draws through WebGL and does not share that ceiling, so it asks for the hard limit
+        // and shows more of the project at once.
+        nodeLimit: mode === '360' ? GRAPH_NODE_HARD_LIMIT : GRAPH_NODE_SOFT_LIMIT,
         ...(folderPrefix ? { folderPrefix } : {}),
         ...(focusRoot ? { focusNodeId: focusRoot, focusDepth: 2 } : {}),
         ...(graphSliceEdgeTypes?.includes('call')
@@ -396,7 +418,7 @@ export function GraphView(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes]);
+  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes, mode]);
 
   useEffect(() => {
     void load();
@@ -413,29 +435,91 @@ export function GraphView(): JSX.Element {
       wheelSensitivity: 2.2,
       minZoom: 0.04,
       maxZoom: 4,
+      // Shift-drag sweeps a box. Cytoscape's own selection model is used only to read what
+      // the box caught; the set the app acts on is `multiSelectedNodeIds`.
+      boxSelectionEnabled: true,
       style: buildStyle(readPalette()),
     });
 
-    cy.on('tap', 'node', (event) => selectNode(event.target.id() as string));
+    cy.on('tap', 'node', (event) => {
+      const id = event.target.id() as string;
+      const original = event.originalEvent as MouseEvent | undefined;
+      // metaKey so the shortcut works the same way on macOS.
+      const additive = original?.ctrlKey === true || original?.metaKey === true;
+
+      if (additive && original?.shiftKey === true) {
+        const store = useUiStore.getState();
+        // The clicked node counts as part of the set, so the shortcut works even when it is
+        // the only thing wanted and nothing was gathered first.
+        const gathered = store.multiSelectedNodeIds.includes(id)
+          ? store.multiSelectedNodeIds
+          : [...store.multiSelectedNodeIds, id];
+        const paths = gathered
+          .map((nodeId) => parseNodeId(nodeId))
+          .filter((parsed) => parsed !== null && parsed.type !== 'folder')
+          .map((parsed) => parsed!.path);
+        store.openPaths(paths);
+        return;
+      }
+
+      if (additive) {
+        useUiStore.getState().toggleMultiSelect(id);
+        return;
+      }
+
+      useUiStore.getState().clearMultiSelect();
+      selectNode(id);
+    });
+    // Whether the sweep that is starting should also open what it catches. Read at the
+    // start of the drag, because by the time the box closes the keys may already be up.
+    let sweepOpens = false;
+    // Set while a sweep finishes. Cytoscape should treat a drag as a drag rather than a
+    // tap, but if a core tap does arrive on mouse-up it would clear the set the sweep just
+    // built — the feature would look like it did nothing.
+    let sweepJustEnded = false;
+
+    cy.on('boxstart', (event) => {
+      const original = event.originalEvent as MouseEvent | undefined;
+      sweepOpens = original?.ctrlKey === true || original?.metaKey === true;
+      // A leftover tap-selection would otherwise be read as part of the box's catch.
+      cy.nodes().unselect();
+    });
+
+    cy.on('boxend', () => {
+      const caught = cy.nodes(':selected');
+      const ids = caught.map((node) => node.id() as string);
+      cy.nodes().unselect();
+      if (ids.length === 0) return;
+
+      const store = useUiStore.getState();
+      store.addToMultiSelect(ids);
+
+      sweepJustEnded = true;
+      setTimeout(() => {
+        sweepJustEnded = false;
+      }, 0);
+
+      if (!sweepOpens) return;
+      const paths = [...new Set([...store.multiSelectedNodeIds, ...ids])]
+        .map((nodeId) => parseNodeId(nodeId))
+        .filter((parsed) => parsed !== null && parsed.type !== 'folder')
+        .map((parsed) => parsed!.path);
+      store.openPaths(paths);
+    });
+
     cy.on('dbltap', 'node', (event) => {
       const parsed = parseNodeId(event.target.id() as string);
       if (parsed && parsed.type !== 'folder') openCode(parsed.path);
     });
     cy.on('tap', (event) => {
-      if (event.target === cy) selectNode(null);
+      if (event.target !== cy || sweepJustEnded) return;
+      useUiStore.getState().clearMultiSelect();
+      selectNode(null);
     });
-    cy.on('mouseover', 'node', (event) => {
-      if (useUiStore.getState().selectedNodeId) return;
-      const node = event.target as cytoscape.NodeSingular;
-      const neighbourhood = node.union(node.incomers()).union(node.outgoers());
-      cy.elements().removeClass('held');
-      cy.elements().difference(neighbourhood).addClass('faded');
-      neighbourhood.addClass('held');
-    });
-    cy.on('mouseout', 'node', () => {
-      if (useUiStore.getState().selectedNodeId) return;
-      cy.elements().removeClass('held faded');
-    });
+    // Hovering deliberately does nothing. Highlighting a neighbourhood on mouseover faded
+    // and unfaded the whole canvas every time the pointer crossed a node, which in a dense
+    // graph is a full-screen flash repeating several times a second — a photosensitivity
+    // hazard. Clicking still highlights the neighbourhood, and it holds until you clear it.
 
     cyRef.current = cy;
     return () => {
@@ -450,7 +534,7 @@ export function GraphView(): JSX.Element {
     if (!cy) return;
     cy.style(buildStyle(readPalette()));
     cy.nodes().forEach((node) => {
-      node.data('color', folderColor(node.data('folder') as string, isDark));
+      node.data('color', communityColor((node.data('community') as number) ?? 0, isDark));
     });
   }, [themeRevision, isDark]);
 
@@ -479,11 +563,36 @@ export function GraphView(): JSX.Element {
           (edge) => visible.has(edge.source) && visible.has(edge.target),
         );
       }
-      cy.add(toElements(filtered, isDark));
+      // Grouping is computed from what is actually on screen, so filtering to one folder
+      // regroups that folder's files rather than showing a slice of a partition it is no
+      // longer part of.
+      const detected = detectCommunities(
+        filtered.nodes.map((node) => node.id),
+        filtered.edges,
+      );
+      setCommunities(detected.communities);
+      cy.add(toElements(filtered, isDark, detected.communityById));
     });
     cy.layout(layoutOptions(layout, (payload.nodes ?? []).length)).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload, layout, hideTypeOnly, collapseBarrels]);
+
+  // Rings the gathered nodes. Kept apart from the selection highlight below so that adding
+  // to the set does not recompute a neighbourhood on every ctrl-click.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const wanted = new Set(multiSelectedNodeIds);
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const marked = wanted.has(node.id());
+        if (marked === node.hasClass('multi')) return;
+        if (marked) node.addClass('multi');
+        else node.removeClass('multi');
+      });
+    });
+  }, [multiSelectedNodeIds, payload]);
 
   // Highlighting is a pure class swap: no refetch, no relayout, viewport untouched.
   useEffect(() => {
@@ -604,6 +713,25 @@ export function GraphView(): JSX.Element {
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+        <div className="flex overflow-hidden rounded border border-edge">
+          {([
+            ['2d', 'Graph'],
+            ['360', '360'],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMode(id)}
+              className={clsx(
+                'px-2 py-1 text-[11px]',
+                mode === id ? 'bg-brand text-surface-0' : 'bg-surface-2 text-ink-muted',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <div className="relative">
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
           <input
@@ -837,9 +965,22 @@ export function GraphView(): JSX.Element {
       )}
 
       <div className="relative min-h-0 flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
+        {/* Cytoscape stays mounted while the 360 view is open. Its instance is bound to this
+            element, so unmounting would tear down and rebuild the graph on every toggle. */}
+        <div ref={containerRef} className={clsx('absolute inset-0', mode === '360' && 'invisible')} />
 
-        <div className="pointer-events-none absolute bottom-3 right-3 h-24 w-36 overflow-hidden rounded-md border border-edge bg-surface-1/95">
+        {mode === '360' && payload ? (
+          <div className="absolute inset-0">
+            <SpaceCanvas payload={payload} />
+          </div>
+        ) : null}
+
+        <div
+          className={clsx(
+            'pointer-events-none absolute bottom-3 right-3 h-24 w-36 overflow-hidden rounded-md border border-edge bg-surface-1/95',
+            mode === '360' && 'hidden',
+          )}
+        >
           {minimap && (
             <svg viewBox="0 0 1 1" className="h-full w-full" preserveAspectRatio="none">
               {minimap.nodes.map((node, index) => (
@@ -864,18 +1005,24 @@ export function GraphView(): JSX.Element {
           )}
         </div>
 
-        <div className="pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2">
+        <div
+          className={clsx(
+            'pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2',
+            mode === '360' && 'hidden',
+          )}
+        >
           <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-            Regions
+            Communities
           </p>
           <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-            {folders.slice(0, 8).map((folder) => (
-              <span key={folder} className="flex items-center gap-1">
+            {communities.slice(0, 8).map((community) => (
+              <span key={community.id} className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: folderColor(folder, isDark) }}
+                  style={{ background: communityColor(community.id, isDark) }}
                 />
-                <span className="mono-path text-ink-muted">{folder}</span>
+                <span className="mono-path text-ink-muted">{community.label}</span>
+                <span className="text-[10px] text-ink-faint">{community.nodes.length}</span>
               </span>
             ))}
           </div>
@@ -893,7 +1040,15 @@ export function GraphView(): JSX.Element {
               </div>
             ))}
             <p className="pt-0.5 text-[10px] text-ink-faint">
-              Size shows how connected a file is. Double-click opens its code.
+              Colour groups files that depend on each other more than on the rest of the
+              project, named after the folder most of them share. Size shows how connected a
+              file is. Double-click opens its code.
+            </p>
+            <p className="text-[10px] text-ink-faint">
+              <span className="text-ink-muted">Ctrl-click</span> gathers ·{' '}
+              <span className="text-ink-muted">Shift-drag</span> sweeps a box ·{' '}
+              <span className="text-ink-muted">add Ctrl</span> to open what you gathered
+              {multiSelectedNodeIds.length > 0 ? ` · ${multiSelectedNodeIds.length} gathered` : ''}
             </p>
           </div>
         </div>

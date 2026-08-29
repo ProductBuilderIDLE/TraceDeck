@@ -40,6 +40,14 @@ interface UiState {
   codeSplit: number;
   editorTabs: string[];
   recentPaths: string[];
+  /**
+   * Nodes gathered with ctrl-click, kept separately from `selectedNodeId`.
+   *
+   * The inspector describes exactly one node, so a multi-selection cannot drive it. Keeping
+   * the two apart lets a set be built up for a bulk action without the inspector flickering
+   * through every node added to it.
+   */
+  multiSelectedNodeIds: string[];
   highlightNodeIds: string[];
   graphSliceEdgeTypes: EdgeType[] | null;
 
@@ -53,6 +61,12 @@ interface UiState {
   toggleCode: () => void;
   setCodeSplit: (fraction: number) => void;
   closeEditorTab: (path: string) => void;
+  toggleMultiSelect: (nodeId: string) => void;
+  clearMultiSelect: () => void;
+  /** Adds a whole batch at once, as a drag-selection does. Existing members are kept. */
+  addToMultiSelect: (nodeIds: readonly string[]) => void;
+  /** Opens several files at once, focusing the first. Used by the bulk-open shortcut. */
+  openPaths: (paths: readonly string[]) => void;
   setHighlightNodeIds: (nodeIds: string[]) => void;
   setGraphSliceEdgeTypes: (edgeTypes: EdgeType[] | null) => void;
 }
@@ -72,6 +86,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   codeSplit: 0.5,
   editorTabs: [],
   recentPaths: [],
+  multiSelectedNodeIds: [],
   highlightNodeIds: [],
   graphSliceEdgeTypes: null,
 
@@ -80,7 +95,14 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   selectNode: (selectedNodeId) => {
     const parsed = selectedNodeId ? parseNodeId(selectedNodeId) : null;
-    set({ selectedNodeId, inspectorOpen: true });
+    // Only something real opens the panel. Clearing a selection — clicking empty canvas —
+    // used to open it too, so a stray click put an empty inspector on screen and stole the
+    // space the graph was using.
+    set(
+      selectedNodeId === null
+        ? { selectedNodeId }
+        : { selectedNodeId, inspectorOpen: true },
+    );
 
     // While the viewer is open it follows the selection, so clicking around the graph reads
     // like browsing a codebase rather than needing a second action every time.
@@ -110,6 +132,45 @@ export const useUiStore = create<UiState>((set, get) => ({
       const codePath = state.codePath === path ? (editorTabs[editorTabs.length - 1] ?? null) : state.codePath;
       return { editorTabs, codePath, codeOpen: editorTabs.length > 0 && state.codeOpen };
     }),
+  toggleMultiSelect: (nodeId) =>
+    set((state) => ({
+      multiSelectedNodeIds: state.multiSelectedNodeIds.includes(nodeId)
+        ? state.multiSelectedNodeIds.filter((entry) => entry !== nodeId)
+        : [...state.multiSelectedNodeIds, nodeId],
+    })),
+  clearMultiSelect: () => set({ multiSelectedNodeIds: [] }),
+  addToMultiSelect: (nodeIds) =>
+    set((state) => ({
+      multiSelectedNodeIds: [
+        ...state.multiSelectedNodeIds,
+        ...nodeIds.filter((id) => !state.multiSelectedNodeIds.includes(id)),
+      ],
+    })),
+
+  openPaths: (paths) =>
+    set((state) => {
+      const wanted = [...new Set(paths)];
+      if (wanted.length === 0) return {};
+
+      // Same cap as opening one file at a time. A bulk open of forty files would otherwise
+      // bury the tab strip, so the most recently added win.
+      const editorTabs = [
+        ...state.editorTabs.filter((entry) => !wanted.includes(entry)),
+        ...wanted,
+      ].slice(-12);
+
+      return {
+        codeOpen: true,
+        codePath: wanted[0] ?? state.codePath,
+        codeLine: null,
+        editorTabs,
+        recentPaths: [
+          ...wanted,
+          ...state.recentPaths.filter((entry) => !wanted.includes(entry)),
+        ].slice(0, 12),
+      };
+    }),
+
   setHighlightNodeIds: (highlightNodeIds) => set({ highlightNodeIds }),
   setGraphSliceEdgeTypes: (graphSliceEdgeTypes) => set({ graphSliceEdgeTypes }),
   toggleCode: () => {

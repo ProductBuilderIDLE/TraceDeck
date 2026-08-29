@@ -23,6 +23,7 @@ App version: `0.1.0`.
 - [Editor](#editor)
 - [Git (local only)](#git-local-only)
 - [Themes](#themes)
+- [Accessibility](#accessibility)
 - [Privacy](#privacy)
 - [Getting started](#getting-started)
 - [CLI](#cli)
@@ -59,7 +60,7 @@ implemented**. Section **J was skipped** on purpose (cloud, LSP, CVE fetch, remo
 | **D. Git** | Local only: diff vs HEAD, blame, mergetool, co-change, per-file renames, 90-day churn. Rename history caveats unused-export findings. Inspector Git section. |
 | **E. Metrics** | Cyclomatic + nesting on functions; simplified LCOM on classes. Complexity / todo / duplicate findings. Metrics view: Martin I/A, fan-in/out, file outliers, churn heatmap. `analysis:folder-metrics` returns `{ folders, outliers }` (`ProjectMetrics`), not a bare array. |
 | **F. Architecture** | Rule packs (`src/shared/rulePacks.ts`, `rules:apply-pack`). Forbidden matrix + layer diagram. Public API + licenses on the dashboard. Headless CLI (`npm run scan`). |
-| **G. Graph UX** | Saved views (`localStorage` key `tracedeck.graph-views`). Collapse barrels, hover-hold neighbors, edge filters, minimap, PNG **and** SVG export. Focus neighborhood; call-slice clear button. |
+| **G. Graph UX** | Saved views (`localStorage` key `tracedeck.graph-views`). Collapse barrels, edge filters, minimap, PNG **and** SVG export. Focus neighborhood; call-slice clear button. Community colouring; 360 mode. Hovering does not highlight — see [Accessibility](#accessibility). |
 | **H. Search / reports** | Explorer kind filters, exported-only, recents, text hits. Findings j/k/Enter. Report sections `changed-since-scan` and `blast-radius`. CODEOWNERS overlay on file detail. |
 | **I. Languages** | TSC for JS/TS with tsbuildinfo cache under `.tracedeck/cache`. SCSS/Sass/Less are **graph sources**. `.styl` stays a non-source asset. JSON imports remain graph leaves. Package-root rewrites: Go `go.mod`, Python `pyproject.toml`/`setup.cfg` + `__init__.py`, Rust `Cargo.toml`. `.tracedeck` is excluded from discovery. |
 
@@ -158,8 +159,23 @@ says "many things point at this," nothing more.
   dies past that.
 - Blast radius (BFS on reverse edges, shortest path as the explanation).
 - Call-graph slice: inspector button restricts the graph to `'call'` edges and symbol nodes.
-- Saved layouts/views, collapse barrels, hover-hold to keep neighbors, minimap, PNG and SVG
-  export.
+- Saved layouts/views, collapse barrels, minimap, PNG and SVG export.
+- **Ctrl-click** (or Cmd-click) gathers nodes into a set, ringed rather than recoloured so
+  the community colours stay readable. **Shift-drag** sweeps a box and adds everything it
+  catches to the same set, so several sweeps accumulate. Adding **Ctrl** to either — 
+  Ctrl-Shift-click, or Ctrl-Shift-drag — opens every gathered file in the editor at once,
+  capped at twelve tabs. Clicking empty canvas clears the set. Ctrl-click works in 360 too;
+  box sweeping is 2D only, since a rectangle does not describe a selection in a rotated 3D
+  scene.
+- The inspector opens when you click something real. Clicking empty canvas clears the
+  selection without opening an empty panel.
+- Nodes are coloured by **community** — files that depend on each other more than on the rest
+  of the project — not by folder. Communities are found with deterministic modularity
+  optimisation (Louvain) and named after the directory most of their files share, so the
+  colour shows how the code is coupled rather than how it is filed.
+- A **360** mode renders the same graph in 3D: folders branch outward from a single root and
+  dependencies are drawn as arcs across the tree, with an orbit camera. It is a second mode,
+  not a replacement — the 2D view keeps the exact layouts and the vector export.
 
 ### Findings
 
@@ -244,6 +260,19 @@ variables, so it reads the live token values and restyles when the theme changes
 window background and native title bar follow too, and the choice is stored per device in
 `localStorage`. A unit test pins the CSS first-paint fallback to the TypeScript definition, and
 another asserts every theme clears a contrast floor.
+
+---
+
+## Accessibility
+
+**Hovering a graph node does nothing on purpose.** An earlier build highlighted a node's
+neighbourhood on mouseover, which faded and unfaded the entire canvas every time the pointer
+crossed a node. Moving across a dense graph made that a full-screen flash repeating several
+times a second — a photosensitivity hazard, and unpleasant for everyone else.
+
+Highlighting is bound to **click** instead. A selection holds until you clear it, so the
+neighbourhood stays readable while you work with it rather than disappearing when the mouse
+drifts.
 
 ---
 
@@ -510,8 +539,9 @@ Each factor is capped at its own maximum and the total is capped at 100. The ins
 every factor's raw value, points awarded, maximum, and a plain-language explanation, so the
 number can always be traced back to the graph.
 
-**Percentile risk** ranks that score against other files in the same project. It is not a
-calibrated probability.
+**Percentile risk** ranks that score against other files in the same project, as the share
+scoring lower plus half the share scoring the same. Files with equal scores always share a
+percentile. It is not a calibrated probability.
 
 **Working-tree impact** takes `git status`-style changed paths and walks the graph
 (`analysis:diff-impact`) so the dashboard can list affected files and tests before you commit.
@@ -657,7 +687,9 @@ TraceDeck reports these in the app rather than hiding them. Static analysis cann
 - **Type-level-only usage** is tracked through imports but not through full type checking
   unless typecheck is on.
 - **Python / Go / Rust / HTML / CSS / Sass:** import-like edges only. No unused-export surface.
-- **Call graph:** conservative extraction; not a points-to or CHA analysis.
+- **Call graph:** conservative extraction; not a points-to or CHA analysis. A method call is
+  attributed only when its receiver is a namespace import, because `logger.send()` and an
+  imported `send` share a name and nothing else.
 - **Parser failures without a line** stay limitations. Line-addressable failures become
   `syntax-error` findings.
 

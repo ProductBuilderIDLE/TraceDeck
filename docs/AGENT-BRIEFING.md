@@ -191,8 +191,9 @@ DB at `<root>/.tracedeck/cli.sqlite`. `tsconfig.node.json` must include **`src/m
 
 ## 12. Remaining honesty gaps (not a backlog to invent J)
 
-- Call graph is conservative, not points-to.
-- Risk percentile is **in-repo rank**, not calibrated incident risk.
+- Call graph is conservative, not points-to. Property-access calls are attributed only
+  through namespace imports; name-only matching created false edges and was removed.
+- Risk percentile is **in-repo rank** (mid-rank, so ties match), not calibrated incident risk.
 - Python/Go/Rust/HTML/CSS/Sass: edges, not unused-exports or types.
 - Draft preview is this-file analysis, not a live whole-project resolve.
 - No LSP, no AI, no CVE feed — by design.

@@ -307,3 +307,68 @@ describe('syntax issues', () => {
     }
   });
 });
+
+describe('call extraction', () => {
+  it('records a bare call as an unqualified callee', () => {
+    const result = parse('a.ts', `function helper() {}\nhelper();`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'helper',
+      line: 2,
+      isPropertyAccess: false,
+      receiver: null,
+    });
+  });
+
+  it('keeps the receiver of a property-access call instead of discarding it', () => {
+    // Recording only the member name is what let `logger.send()` be mistaken for an
+    // imported `send`; the receiver is what makes the two distinguishable downstream.
+    const result = parse('a.ts', `logger.send('hello');`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'send',
+      line: 1,
+      isPropertyAccess: true,
+      receiver: 'logger',
+    });
+  });
+
+  it('marks a property access with no plain identifier receiver', () => {
+    const result = parse('a.ts', `class A { run() { this.step(); } }\nconfig.a.b.load();`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'step',
+      line: 1,
+      isPropertyAccess: true,
+      receiver: null,
+    });
+    expect(result.calls).toContainEqual({
+      callee: 'load',
+      line: 2,
+      isPropertyAccess: true,
+      receiver: null,
+    });
+  });
+
+  it('binds the local name of a namespace import', () => {
+    const result = parse('a.ts', `import * as api from './api';\napi.send();`);
+
+    expect(result.imports[0]).toMatchObject({
+      specifier: './api',
+      importedNames: ['*'],
+      namespaceBinding: 'api',
+    });
+    expect(result.calls).toContainEqual({
+      callee: 'send',
+      line: 2,
+      isPropertyAccess: true,
+      receiver: 'api',
+    });
+  });
+
+  it('leaves a named import without a namespace binding', () => {
+    const result = parse('a.ts', `import { send } from './api';`);
+
+    expect(result.imports[0]?.namespaceBinding).toBeUndefined();
+  });
+});

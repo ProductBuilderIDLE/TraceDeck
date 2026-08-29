@@ -12,6 +12,8 @@ export interface ParsedImport {
   importedNames: string[];
   /** True for `export * from '...'`, which makes downstream usage impossible to pin down. */
   isStarExport: boolean;
+  /** Local name bound by `import * as ns from '...'`, which qualifies calls made through it. */
+  namespaceBinding?: string;
   /**
    * True when the specifier was not a plain string literal, e.g. `import(buildPath(name))`.
    * These are reported as unresolvable rather than guessed at.
@@ -32,6 +34,17 @@ export interface ParsedSymbol {
 export interface ParsedCall {
   callee: string;
   line: number;
+  /**
+   * True when the call was written as `something.callee()` rather than as a bare `callee()`.
+   *
+   * The distinction matters because the callee name alone cannot say what a property access
+   * refers to: `logger.send()` and an imported `send` share a name but nothing else. Edge
+   * construction refuses to attribute a property access unless the receiver is a namespace
+   * import, which is the one receiver whose target is statically known.
+   */
+  isPropertyAccess: boolean;
+  /** The identifier before the dot, when there is one. Null for `this.f()` or `a.b.c()`. */
+  receiver: string | null;
 }
 
 export interface SyntaxIssue {
@@ -461,12 +474,15 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
     const clause = node.importClause;
     const importedNames: string[] = [];
     let isTypeOnly = clause?.isTypeOnly ?? false;
+    let namespaceBinding: string | undefined;
 
     if (clause?.name) importedNames.push('default');
     if (clause?.namedBindings) {
       if (ts.isNamespaceImport(clause.namedBindings)) {
         // `import * as ns` consumes the whole module surface; individual names are unknown.
+        // The binding itself is kept, because `ns.foo()` does name a specific target.
         importedNames.push('*');
+        namespaceBinding = clause.namedBindings.name.text;
       } else {
         for (const element of clause.namedBindings.elements) {
           importedNames.push((element.propertyName ?? element.name).text);
@@ -483,6 +499,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
       importedNames,
       isStarExport: false,
       isDynamicExpression: false,
+      ...(namespaceBinding ? { namespaceBinding } : {}),
     });
   }
 
@@ -591,13 +608,25 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
     if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return;
     if (ts.isIdentifier(node.expression) && node.expression.text === 'require') return;
 
-    let callee: string | null = null;
-    if (ts.isIdentifier(node.expression)) callee = node.expression.text;
-    else if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.name)) {
-      callee = node.expression.name.text;
+    if (ts.isIdentifier(node.expression)) {
+      calls.push({
+        callee: node.expression.text,
+        line: lineOf(node),
+        isPropertyAccess: false,
+        receiver: null,
+      });
+      return;
     }
-    if (!callee) return;
-    calls.push({ callee, line: lineOf(node) });
+
+    if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.name)) {
+      const target = node.expression.expression;
+      calls.push({
+        callee: node.expression.name.text,
+        line: lineOf(node),
+        isPropertyAccess: true,
+        receiver: ts.isIdentifier(target) ? target.text : null,
+      });
+    }
   }
 
   function recordDeclaration(node: ts.Node): void {

@@ -216,10 +216,22 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
       isTypeOnly?: boolean;
       dynamicExpression?: boolean;
       callee?: string;
+      calleeReceiver?: string;
+      namespaceBinding?: string;
     };
 
     if (edge.edge_type === 'call') {
-      if (metadata.callee) calls.push({ callee: metadata.callee, line: edge.source_line ?? 1 });
+      // A stored receiver means the edge came from `ns.callee()`; its absence means a bare
+      // `callee()`. Property accesses that were refused never produced a row, so replaying
+      // these rows reproduces exactly the edges a full rescan would build.
+      if (metadata.callee) {
+        calls.push({
+          callee: metadata.callee,
+          line: edge.source_line ?? 1,
+          isPropertyAccess: metadata.calleeReceiver !== undefined,
+          receiver: metadata.calleeReceiver ?? null,
+        });
+      }
       continue;
     }
 
@@ -240,6 +252,7 @@ function reconstructParsedFile(store: DataStore, fileId: number): ParsedFile {
       importedNames: metadata.importedNames ?? [],
       isStarExport: metadata.isStarExport === true,
       isDynamicExpression: metadata.dynamicExpression === true,
+      ...(metadata.namespaceBinding ? { namespaceBinding: metadata.namespaceBinding } : {}),
     });
   }
 

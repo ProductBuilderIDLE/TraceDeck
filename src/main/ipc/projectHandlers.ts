@@ -12,6 +12,7 @@ import {
   requireStringArray,
 } from '../utils/validation';
 import { startWatchingForProject } from './scanHandlers';
+import { forgetPreviewContext } from '../services/previewService';
 import { stopWatching } from '../services/watchService';
 import { HandledError, type HandlerMap } from './registry';
 
@@ -97,6 +98,7 @@ export function projectHandlers(store: DataStore): HandlerMap {
       const value = asObject(payload);
       const projectId = requireInt(value['projectId'], 'projectId', 1);
       stopWatching(projectId);
+      forgetPreviewContext(projectId);
       // Only the app's own analysis rows are deleted; the scanned folder is never touched.
       return { removed: store.projects.remove(projectId) };
     },

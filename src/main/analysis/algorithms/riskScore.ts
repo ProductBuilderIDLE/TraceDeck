@@ -133,3 +133,37 @@ export const MAX_POSSIBLE_SCORE = Object.values(WEIGHTS).reduce(
   (total, weight) => total + weight.max,
   0,
 );
+
+/**
+ * Ranks each score against the others in the same project.
+ *
+ * Percentile is a function of the score itself, never of a file's position in a sorted array,
+ * so two files with the same score always report the same percentile. Ranking by array index
+ * instead would spread the many files that share a low score across a wide band of
+ * percentiles and invite a comparison the underlying numbers do not support.
+ *
+ * The definition is the standard mid-rank percentile: the share of files scoring strictly
+ * lower, plus half the share scoring the same. Counting half of the tied group keeps the
+ * endpoints sensible — the only file in a project sits at 50 rather than at 0 or 100.
+ */
+export function assignPercentiles(scores: readonly RiskScore[]): RiskScore[] {
+  if (scores.length === 0) return [];
+
+  const countByScore = new Map<number, number>();
+  for (const entry of scores) {
+    countByScore.set(entry.score, (countByScore.get(entry.score) ?? 0) + 1);
+  }
+
+  const percentileByScore = new Map<number, number>();
+  let lower = 0;
+  for (const score of [...countByScore.keys()].sort((left, right) => left - right)) {
+    const equal = countByScore.get(score) ?? 0;
+    percentileByScore.set(score, Math.round(((lower + equal / 2) / scores.length) * 100));
+    lower += equal;
+  }
+
+  return scores.map((entry) => ({
+    ...entry,
+    percentile: percentileByScore.get(entry.score) ?? 0,
+  }));
+}

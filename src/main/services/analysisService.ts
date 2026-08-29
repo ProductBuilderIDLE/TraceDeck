@@ -26,7 +26,7 @@ import {
   splitByDepth,
   traverse,
 } from '../analysis/algorithms/blastRadius';
-import { computeRiskScore } from '../analysis/algorithms/riskScore';
+import { assignPercentiles, computeRiskScore } from '../analysis/algorithms/riskScore';
 import { isTestFile } from '../analysis/discovery';
 import { toPosixPath } from '../utils/glob';
 import { computeMartinMetrics } from '../analysis/algorithms/martin';
@@ -186,17 +186,7 @@ export class AnalysisService {
   }
 
   private withPercentiles(scores: RiskScore[]): RiskScore[] {
-    if (scores.length === 0) return scores;
-    const ranked = [...scores].sort((left, right) => left.score - right.score);
-    const last = ranked.length - 1;
-    const percentileById = new Map<string, number>();
-    ranked.forEach((entry, index) => {
-      percentileById.set(entry.nodeId, last === 0 ? 100 : Math.round((index / last) * 100));
-    });
-    return scores.map((entry) => ({
-      ...entry,
-      percentile: percentileById.get(entry.nodeId) ?? 0,
-    }));
+    return assignPercentiles(scores);
   }
 
   blastRadius(request: BlastRadiusRequest): BlastRadiusResult {

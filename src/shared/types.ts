@@ -323,6 +323,10 @@ export interface EdgeMetadata {
   dynamicExpression?: boolean;
   /** Callee identifier recorded on conservative `call` edges. */
   callee?: string;
+  /** Namespace binding a `call` edge was qualified by, as the `ns` in `ns.callee()`. */
+  calleeReceiver?: string;
+  /** Local name bound by `import * as ns`, kept so an incremental rescan can rebuild calls. */
+  namespaceBinding?: string;
 }
 
 export interface Finding {

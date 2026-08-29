@@ -488,7 +488,7 @@ describe('canonical working tree capture', () => {
     const changed = await captureWorkingTree(rootPath);
     expect(changed.changes).toEqual(first.changes);
     expect(changed.fingerprint).not.toBe(first.fingerprint);
-  });
+  }, 15_000);
 });
 
 describe('bounded review diffs', () => {

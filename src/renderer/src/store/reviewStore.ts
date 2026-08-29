@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   ChangeReviewSummary,
   ReviewFilters,
+  ReviewItem,
   ReviewOperationPhase,
   ReviewPage,
   ReviewStatus,
@@ -72,6 +73,64 @@ function clampDepth(value: number): number {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
+/**
+ * Harden review items against version-skew or HMR paths where an older main
+ * process may have omitted a field that the current renderer expects. The
+ * ReviewItem types declare every array as required, but we defensively fall
+ * back to empty arrays at runtime.
+ */
+function normalizeReviewItem(item: ReviewItem): ReviewItem {
+  switch (item.itemType) {
+    case 'edge':
+      return {
+        ...item,
+        sourceLines: item.sourceLines ?? [],
+        specifiers: item.specifiers ?? [],
+      };
+    case 'finding':
+      return {
+        ...item,
+        finding: {
+          ...item.finding,
+          relatedNodeIds: item.finding.relatedNodeIds ?? [],
+        },
+      };
+    case 'cycle':
+      return {
+        ...item,
+        cyclePath: item.cyclePath ?? [],
+        memberPaths: item.memberPaths ?? [],
+      };
+    case 'reachable-export':
+      return item;
+    case 'affected-file':
+    case 'candidate-test':
+      return {
+        ...item,
+        originPaths: item.originPaths ?? [],
+        explanations: (item.explanations ?? []).map((explanation) => ({
+          ...explanation,
+          path: explanation.path ?? [],
+          edgeTypes: explanation.edgeTypes ?? [],
+        })),
+      };
+    case 'limitation':
+      return {
+        ...item,
+        paths: item.paths ?? [],
+      };
+    default:
+      return item;
+  }
+}
+
+function normalizeReviewPage(page: ReviewPage): ReviewPage {
+  return {
+    ...page,
+    items: page.items.map(normalizeReviewItem),
+  };
 }
 
 export const useReviewStore = create<ReviewState>((set, get) => {
@@ -206,7 +265,7 @@ export const useReviewStore = create<ReviewState>((set, get) => {
       if (generation !== get().queryRequestGeneration) {
         throw new Error('Stale review query');
       }
-      return page;
+      return normalizeReviewPage(page);
     },
 
     selectTab: (selectedTab) => set({ selectedTab }),

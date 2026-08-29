@@ -51,9 +51,10 @@ The branch is large because it carries the full A–I implementation plus the ne
 
 - `src/shared/constants.ts` defines `MAX_REVIEW_DIFF_BYTES` (2 MiB), `MAX_REVIEW_DIFF_LINES` (20,000), `MAX_REVIEW_BASELINE_BYTES` (2 GiB), `MAX_REVIEW_BASELINE_ENTRIES` (100,000), and depth clamped to 1–25.
 
-### No hover-driven graph behavior
+### No hover-driven graph repaints
 
-- A grep for `onMouseEnter|onMouseOver|onMouseMove|onPointerOver|onPointerEnter` across `src/renderer/**/*.tsx` found no matches.
+- A grep for `onMouseEnter|onMouseOver|onMouseMove|onPointerOver|onPointerEnter` across `src/renderer/**/*.tsx` found no JSX-bound handlers that drive the review graph.
+- `src/renderer/src/components/views/SpaceCanvas.tsx` uses an existing `addEventListener('pointermove')` to update a path label, but it does not trigger a canvas repaint or any change-review-specific behavior.
 - The review drill-down is click-driven (`src/renderer/src/components/views/ChangeReview.tsx`, `ReviewPage.tsx`, `ReviewEvidenceInspector.tsx`).
 
 ### Tests
@@ -63,18 +64,23 @@ The branch is large because it carries the full A–I implementation plus the ne
 
 ## Issues found and resolved
 
-1. **Stale CLI review when `.tracedeck/` is not gitignored.**
+1. **Missing `?? []` guards in new review UI components.**
+   - Root cause: `ReviewEvidenceInspector.tsx`, `ReviewPage.tsx`, and `ReviewHeader.tsx` accessed arrays (`sourceLines`, `specifiers`, `relatedNodeIds`, `cyclePath`, `memberPaths`, `originPaths`, `explanations`, `paths`, `staleReasons`) without fallback, which can throw if an older main-process version omits a field during HMR or version skew.
+   - Correction: added `?? []` fallbacks in all review renderer components, and added `normalizeReviewItem`/`normalizeReviewPage` in `src/renderer/src/store/reviewStore.ts` so every page returned by `loadPage` has defined arrays.
+   - Verification: `npm test`, `npm run typecheck:web`, `npm run typecheck:node`, and `npm run lint -- --quiet` all still pass.
+
+2. **Stale CLI review when `.tracedeck/` is not gitignored.**
    - Root cause: the CLI review writes `.tracedeck/cli.sqlite`; if the directory is untracked, Git reports it as changed and the review becomes stale.
    - Correction: added `.tracedeck/` to `tests/fixtures/sample-project/.gitignore` and documented the requirement in `README.md`, `DEVELOPMENT-SPEC.md`, and `docs/AGENT-BRIEFING.md`.
    - Verification: the exact plan Step 4 CLI script now completes successfully.
 
-2. **Documentation over-stated GUI export format support.**
+3. **Documentation over-stated GUI export format support.**
    - Root cause: `src/renderer/src/components/views/ChangeReview.tsx:228` hard-codes `format: 'markdown'` for `review:export`.
    - Correction: README and DEVELOPMENT-SPEC now say the CLI supports all four formats (`text`, `json`, `markdown`, `html`) while the GUI export is currently Markdown-only.
 
 ## Issues found but not corrected
 
-- None. Both findings above were corrected and re-verified.
+- None. All findings above were corrected and re-verified.
 
 ## Verification summary
 

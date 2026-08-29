@@ -259,11 +259,11 @@ function ReviewItemContent({
             <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase border border-edge bg-surface-2 text-ink-muted">{item.edgeType}</span>
             {item.typeOnly && <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase border border-edge bg-surface-2 text-ink-muted">type-only</span>}
           </div>
-          {item.sourceLines.length > 0 && (
-            <div className="text-[11px] text-ink-faint">Lines {item.sourceLines.join(', ')}</div>
+          {(item.sourceLines ?? []).length > 0 && (
+            <div className="text-[11px] text-ink-faint">Lines {(item.sourceLines ?? []).join(', ')}</div>
           )}
-          {item.specifiers.length > 0 && (
-            <div className="text-[11px] text-ink-faint">{item.specifiers.join(', ')}</div>
+          {(item.specifiers ?? []).length > 0 && (
+            <div className="text-[11px] text-ink-faint">{(item.specifiers ?? []).join(', ')}</div>
           )}
         </div>
       );
@@ -277,9 +277,9 @@ function ReviewItemContent({
           </div>
           <div className="font-medium text-ink">{item.finding.title}</div>
           <div className="text-ink-muted">{item.finding.description}</div>
-          {item.finding.relatedNodeIds.length > 0 && (
+          {(item.finding.relatedNodeIds ?? []).length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {item.finding.relatedNodeIds.map((nodeId) => {
+              {(item.finding.relatedNodeIds ?? []).map((nodeId) => {
                 const parsed = nodePath(nodeId);
                 if (!parsed) return <span key={nodeId} className="text-ink-faint">{nodeId}</span>;
                 return (
@@ -315,18 +315,18 @@ function ReviewItemContent({
         <div className="space-y-1.5 text-[12px]">
           <div className="flex flex-wrap items-center gap-2">
             <span className={clsx('font-medium', directionTone(item.direction))}>{item.direction}</span>
-            <span className="text-ink-faint">cycle of {item.cyclePath.length} files</span>
+            <span className="text-ink-faint">cycle of {(item.cyclePath ?? []).length} files</span>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            {item.cyclePath.map((path, index) => (
+            {(item.cyclePath ?? []).map((path, index) => (
               <span key={`${path}-${index}`} className="flex items-center gap-1.5">
                 <PathLabel path={path} />
-                {index < item.cyclePath.length - 1 && <span className="text-ink-faint">→</span>}
+                {index < (item.cyclePath ?? []).length - 1 && <span className="text-ink-faint">→</span>}
               </span>
             ))}
           </div>
-          {item.memberPaths.length > 0 && (
-            <div className="text-[11px] text-ink-faint">Members: {item.memberPaths.join(', ')}</div>
+          {(item.memberPaths ?? []).length > 0 && (
+            <div className="text-[11px] text-ink-faint">Members: {(item.memberPaths ?? []).join(', ')}</div>
           )}
         </div>
       );
@@ -363,7 +363,7 @@ function ReviewItemContent({
             <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase border border-edge bg-surface-2 text-ink-muted">{item.code}</span>
           </div>
           <div className="text-ink-muted">{item.message}</div>
-          {item.paths.length > 0 && <div className="text-[11px] text-ink-faint">{item.paths.join(', ')}</div>}
+          {(item.paths ?? []).length > 0 && <div className="text-[11px] text-ink-faint">{(item.paths ?? []).join(', ')}</div>}
           {item.omittedCount > 0 && <div className="text-[11px] text-risk-high">{formatCount(item.omittedCount)} items omitted</div>}
         </div>
       );
@@ -386,10 +386,10 @@ function ImpactRow({ item }: { item: { itemType: 'affected-file' | 'candidate-te
         <span className={sideTone('baseline')}>{item.baselinePresent ? 'baseline present' : 'baseline absent'}</span>
         <span className={sideTone('target')}>{item.targetPresent ? 'target present' : 'target absent'}</span>
       </div>
-      {item.originPaths.length > 0 && (
-        <div className="text-[11px] text-ink-faint">Origins: {item.originPaths.join(', ')}</div>
+      {(item.originPaths ?? []).length > 0 && (
+        <div className="text-[11px] text-ink-faint">Origins: {(item.originPaths ?? []).join(', ')}</div>
       )}
-      {item.explanations.map((explanation, index) => (
+      {(item.explanations ?? []).map((explanation, index) => (
         <ExplanationPath key={index} explanation={explanation} />
       ))}
     </div>
@@ -403,11 +403,11 @@ function ExplanationPath({ explanation }: { explanation: ReviewImpactExplanation
       <span className="text-ink-faint">from</span>
       <PathLabel path={explanation.originPath} />
       <span className="text-ink-faint">via</span>
-      {explanation.path.map((path, index) => (
+      {(explanation.path ?? []).map((path, index) => (
         <span key={`${path}-${index}`} className="flex items-center gap-1.5">
           <PathLabel path={path} />
-          {index < explanation.path.length - 1 && explanation.edgeTypes[index] && (
-            <span className="text-ink-faint">({explanation.edgeTypes[index]}) →</span>
+          {index < (explanation.path ?? []).length - 1 && (explanation.edgeTypes ?? [])[index] && (
+            <span className="text-ink-faint">({(explanation.edgeTypes ?? [])[index]}) →</span>
           )}
         </span>
       ))}

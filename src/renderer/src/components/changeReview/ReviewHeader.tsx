@@ -92,7 +92,7 @@ export function ReviewHeader({
         <Warning>
           This review is stale.
           {' '}
-          {status.latestReview.staleReasons.join(', ')}
+          {(status.latestReview.staleReasons ?? []).join(', ')}
         </Warning>
       )}
 

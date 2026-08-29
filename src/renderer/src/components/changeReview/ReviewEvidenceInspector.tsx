@@ -261,11 +261,11 @@ function EdgeBody({
           </span>
         )}
       </div>
-      {evidence.sourceLines.length > 0 && (
-        <p className="text-[11px] text-ink-faint">Lines {evidence.sourceLines.join(', ')}</p>
+      {(evidence.sourceLines ?? []).length > 0 && (
+        <p className="text-[11px] text-ink-faint">Lines {(evidence.sourceLines ?? []).join(', ')}</p>
       )}
-      {evidence.specifiers.length > 0 && (
-        <p className="text-[11px] text-ink-faint">{evidence.specifiers.join(', ')}</p>
+      {(evidence.specifiers ?? []).length > 0 && (
+        <p className="text-[11px] text-ink-faint">{(evidence.specifiers ?? []).join(', ')}</p>
       )}
     </div>
   );
@@ -289,9 +289,9 @@ function FindingBody({
       </div>
       <p className="text-ink">{evidence.finding.title}</p>
       <p className="text-ink-muted">{evidence.finding.description}</p>
-      {evidence.finding.relatedNodeIds.length > 0 && (
+      {(evidence.finding.relatedNodeIds ?? []).length > 0 && (
         <p className="text-[11px] text-ink-faint">
-          Related: {evidence.finding.relatedNodeIds.join(', ')}
+          Related: {(evidence.finding.relatedNodeIds ?? []).join(', ')}
         </p>
       )}
       <Button
@@ -353,19 +353,19 @@ function CycleBody({
   return (
     <div className="space-y-2">
       <p className={clsx('font-medium text-[12px]', directionClass(evidence.direction))}>
-        {evidence.direction} cycle of {evidence.cyclePath.length} files
+        {evidence.direction} cycle of {(evidence.cyclePath ?? []).length} files
       </p>
       <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
-        {evidence.cyclePath.map((path, index) => (
+        {(evidence.cyclePath ?? []).map((path, index) => (
           <span key={`${path}-${index}`} className="flex items-center gap-1.5">
             <PathLabel path={path} />
-            {index < evidence.cyclePath.length - 1 && <span className="text-ink-faint">→</span>}
+            {index < (evidence.cyclePath ?? []).length - 1 && <span className="text-ink-faint">→</span>}
           </span>
         ))}
       </div>
-      {evidence.memberPaths.length > 0 && (
+      {(evidence.memberPaths ?? []).length > 0 && (
         <p className="text-[11px] text-ink-faint">
-          Members: {evidence.memberPaths.join(', ')}
+          Members: {(evidence.memberPaths ?? []).join(', ')}
         </p>
       )}
     </div>
@@ -420,12 +420,12 @@ function ImpactBody({
           {evidence.targetPresent ? 'target present' : 'target absent'}
         </span>
       </div>
-      {evidence.originPaths.length > 0 && (
+      {(evidence.originPaths ?? []).length > 0 && (
         <p className="text-[11px] text-ink-faint">
-          Origins: {evidence.originPaths.join(', ')}
+          Origins: {(evidence.originPaths ?? []).join(', ')}
         </p>
       )}
-      {evidence.explanations.map((explanation, index) => (
+      {(evidence.explanations ?? []).map((explanation, index) => (
         <ExplanationPath key={index} explanation={explanation} />
       ))}
     </div>
@@ -439,11 +439,11 @@ function ExplanationPath({ explanation }: { explanation: ReviewImpactExplanation
         {explanation.side} · from {explanation.originPath}
       </p>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        {explanation.path.map((path, index) => (
+        {(explanation.path ?? []).map((path, index) => (
           <span key={`${path}-${index}`} className="flex items-center gap-1.5">
             <PathLabel path={path} />
-            {index < explanation.path.length - 1 && explanation.edgeTypes[index] && (
-              <span className="text-ink-faint">({explanation.edgeTypes[index]}) →</span>
+            {index < (explanation.path ?? []).length - 1 && (explanation.edgeTypes ?? [])[index] && (
+              <span className="text-ink-faint">({(explanation.edgeTypes ?? [])[index]}) →</span>
             )}
           </span>
         ))}
@@ -475,8 +475,8 @@ function LimitationBody({
         </span>
       </div>
       <p className="text-ink-muted">{evidence.message}</p>
-      {evidence.paths.length > 0 && (
-        <p className="text-[11px] text-ink-faint">{evidence.paths.join(', ')}</p>
+      {(evidence.paths ?? []).length > 0 && (
+        <p className="text-[11px] text-ink-faint">{(evidence.paths ?? []).join(', ')}</p>
       )}
       {evidence.omittedCount > 0 && (
         <p className="text-[11px] text-risk-high">{evidence.omittedCount} items omitted</p>

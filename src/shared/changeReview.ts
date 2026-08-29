@@ -69,6 +69,12 @@ export interface ReviewStatus {
     message: string;
     cancellationRequested: boolean;
   } | null;
+  lastOutcome: {
+    operationId: string;
+    status: 'completed' | 'cancelled' | 'stale' | 'failed';
+    code: string | null;
+    message: string;
+  } | null;
 }
 
 export interface ReviewEdgeChange {

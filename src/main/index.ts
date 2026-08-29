@@ -3,6 +3,7 @@ import { applyProcessSecurity, applySessionSecurity, hardenWebContents } from '.
 import { createMainWindow } from './window';
 import { registerAllHandlers } from './ipc';
 import { databaseFilePath, initialiseDatabase, shutdownDatabase } from './db/appDatabase';
+import { cleanupAbandonedReviewTemps } from './services/changeReview/materializer';
 
 // Sandboxing must be enabled before the app is ready, so it runs at module load.
 applyProcessSecurity();
@@ -28,6 +29,9 @@ app.on('web-contents-created', (_event, contents) => {
 
 app.whenReady().then(() => {
   applySessionSecurity();
+  void cleanupAbandonedReviewTemps(app.getVersion()).catch(() => {
+    console.warn('Abandoned change review workspace cleanup failed.');
+  });
 
   let store;
   try {

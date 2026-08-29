@@ -188,3 +188,51 @@ describe('reportFileExtension', () => {
     expect(reportFileExtension('html')).toBe('.html');
   });
 });
+
+/**
+ * "Files scanned" conflated the whole inventory with the files the dependency graph could
+ * parse, which is what made an HTML/CSS project look almost empty. The two counts are now
+ * reported separately, and every format must agree on the same literal numbers.
+ */
+describe('inventory and graph counts are reported separately', () => {
+  it('names both counts in Markdown', () => {
+    const markdown = renderMarkdown(bundleFor());
+
+    expect(markdown).toContain('| Project files |');
+    expect(markdown).toContain('| Graph source files |');
+    expect(markdown).not.toContain('| Files scanned |');
+  });
+
+  it('names both counts in HTML', () => {
+    const html = renderHtml(bundleFor());
+
+    expect(html).toContain('Project files');
+    expect(html).toContain('Graph source files');
+    expect(html).not.toContain('Files scanned');
+  });
+
+  it('exposes both counts in JSON', () => {
+    const summary = (JSON.parse(renderJson(bundleFor())) as { summary: Record<string, number> }).summary;
+
+    expect(summary['totalFiles']).toBeGreaterThan(0);
+    expect(summary['graphEligibleFiles']).toBeGreaterThan(0);
+  });
+
+  it('renders a changed-since-scan section even without a previous snapshot', () => {
+    const markdown = renderMarkdown(
+      bundleFor({ sections: ['changed-since-scan'] }),
+    );
+
+    expect(markdown).toMatch(/previous scan/i);
+  });
+
+  it('reports the same literal numbers in every format', () => {
+    const bundle = bundleFor();
+    const summary = (JSON.parse(renderJson(bundle)) as { summary: Record<string, number> }).summary;
+
+    expect(renderMarkdown(bundle)).toContain(`| Project files | ${summary['totalFiles']} |`);
+    expect(renderMarkdown(bundle)).toContain(
+      `| Graph source files | ${summary['graphEligibleFiles']} |`,
+    );
+  });
+});

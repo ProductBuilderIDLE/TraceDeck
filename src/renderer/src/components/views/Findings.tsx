@@ -9,6 +9,8 @@ import type {
   TypeErrorDetails,
   UnresolvedImportDetails,
   UnusedExportDetails,
+  SyntaxErrorDetails,
+  MergeConflictDetails,
 } from '@shared/types';
 import { fileNodeId, symbolNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
@@ -31,7 +33,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
   return (
     <div className="space-y-1.5">
       <div className="rounded border border-edge bg-surface-2 p-2">
-        {details.cyclePath.map((path, index) => (
+        {details.cyclePath?.map((path, index) => (
           <div
             key={`${path}-${index}`}
             className="flex items-center gap-1.5"
@@ -45,7 +47,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
             >
               {path}
             </button>
-            {details.edges[index]?.line && (
+            {details.edges?.[index]?.line && (
               <span className="shrink-0 font-mono text-[10px] text-ink-faint">
                 :{details.edges[index]?.line}
               </span>
@@ -54,7 +56,7 @@ function CycleBody({ finding }: { finding: Finding }): JSX.Element {
         ))}
       </div>
       <p className="text-[11px] text-ink-faint">
-        {details.cyclePath.length - 1} file(s) in this cycle. The last import closes the loop back
+        {(details.cyclePath?.length ?? 1) - 1} file(s) in this cycle. The last import closes the loop back
         to the first file.
       </p>
     </div>
@@ -76,7 +78,7 @@ function UnusedExportBody({ finding }: { finding: Finding }): JSX.Element {
         <span className="text-[10px] text-ink-faint">{details.symbolKind}</span>
         <PathLabel path={`${details.filePath}:${details.line}`} />
       </button>
-      {details.caveats.map((caveat) => (
+      {(details.caveats ?? []).map((caveat) => (
         <Caveat key={caveat}>{caveat}</Caveat>
       ))}
     </div>
@@ -176,6 +178,56 @@ function TypeErrorBody({ finding }: { finding: Finding }): JSX.Element {
   );
 }
 
+function SyntaxErrorBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details as SyntaxErrorDetails;
+  const openCode = useUiStore((state) => state.openCode);
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => openCode(details.filePath, details.line)}
+        className="flex items-baseline gap-2 text-left hover:text-brand"
+      >
+        <PathLabel path={details.filePath} />
+        <span className="font-mono text-[10px] text-ink-faint">
+          :{details.line}:{details.column}
+        </span>
+      </button>
+      <p className="text-[11px] leading-relaxed text-ink-muted">{details.message}</p>
+    </div>
+  );
+}
+
+function MergeConflictBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details as MergeConflictDetails;
+  const openCode = useUiStore((state) => state.openCode);
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => openCode(details.filePath, details.startLine)}
+        className="flex items-baseline gap-2 text-left hover:text-brand"
+      >
+        <PathLabel path={details.filePath} />
+        <span className="font-mono text-[10px] text-ink-faint">
+          :{details.startLine}
+          {details.endLine !== null ? `-${details.endLine}` : ''}
+        </span>
+      </button>
+      {details.label && (
+        <p className="mono-path text-ink-muted">Conflicting side: {details.label}</p>
+      )}
+      {!details.complete && (
+        <Caveat>
+          This marker group is not properly closed, so the file is still mid-merge.
+        </Caveat>
+      )}
+    </div>
+  );
+}
+
 function FindingBody({ finding }: { finding: Finding }): JSX.Element {
   switch (finding.findingType) {
     case 'circular-dependency':
@@ -188,7 +240,45 @@ function FindingBody({ finding }: { finding: Finding }): JSX.Element {
       return <UnresolvedBody finding={finding} />;
     case 'type-error':
       return <TypeErrorBody finding={finding} />;
+    case 'syntax-error':
+      return <SyntaxErrorBody finding={finding} />;
+    case 'merge-conflict':
+      return <MergeConflictBody finding={finding} />;
+    case 'todo-comment':
+    case 'duplicate-code':
+    case 'complexity-hotspot':
+      return <MetricFindingBody finding={finding} />;
   }
+}
+
+function MetricFindingBody({ finding }: { finding: Finding }): JSX.Element {
+  const details = finding.details;
+  if (details.kind === 'todo-comment') {
+    return (
+      <p className="text-[11px] text-ink-muted">
+        {details.tag} at line {details.line}: {details.text || finding.description}
+      </p>
+    );
+  }
+  if (details.kind === 'duplicate-code') {
+    return (
+      <ul className="space-y-0.5">
+        {details.filePaths?.map((path, index) => (
+          <li key={`${path}-${index}`} className="mono-path text-ink-muted">
+            {path}:{details.startLines[index] ?? 1}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (details.kind === 'complexity-hotspot') {
+    return (
+      <p className="text-[11px] text-ink-muted">
+        {details.symbolName} complexity {details.complexity}, nesting {details.nestingDepth} (line {details.line})
+      </p>
+    );
+  }
+  return <p className="text-[11px] text-ink-muted">{finding.description}</p>;
 }
 
 export function FindingsView({
@@ -203,10 +293,13 @@ export function FindingsView({
   const dismissFinding = useAppStore((state) => state.dismissFinding);
   const selectNode = useUiStore((state) => state.selectNode);
   const setActiveView = useUiStore((state) => state.setActiveView);
+  const focusedFindingFingerprint = useUiStore((state) => state.focusedFindingFingerprint);
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
 
   const [findings, setFindings] = useState<Finding[]>([]);
   const [showDismissed, setShowDismissed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cursor, setCursor] = useState(0);
 
   useEffect(() => {
     if (!project) return;
@@ -238,6 +331,40 @@ export function FindingsView({
 
   const dismissedCount = findings.filter((finding) => finding.dismissedAt).length;
 
+  useEffect(() => {
+    if (!focusedFindingFingerprint) return;
+    if (focusedFindingFingerprint.findingType !== findingType) return;
+    const index = visible.findIndex(
+      (finding) => finding.fingerprint === focusedFindingFingerprint.fingerprint,
+    );
+    if (index !== -1) {
+      setCursor(index);
+    }
+    clearReviewContext();
+  }, [focusedFindingFingerprint, visible, findingType, clearReviewContext]);
+
+  useEffect(() => {
+    setCursor(0);
+  }, [findingType, visible.length]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'j') setCursor((value) => Math.min(visible.length - 1, value + 1));
+      if (event.key === 'k') setCursor((value) => Math.max(0, value - 1));
+      if (event.key === 'Enter') {
+        const finding = visible[cursor];
+        const nodeId = finding?.relatedNodeIds[0];
+        if (nodeId) {
+          selectNode(nodeId);
+          setActiveView('graph');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [visible, cursor, selectNode, setActiveView]);
+
   const handleDismiss = async (finding: Finding): Promise<void> => {
     await dismissFinding(finding.id, finding.dismissedAt === null);
     setFindings((current) =>
@@ -267,7 +394,7 @@ export function FindingsView({
               {title} <span className="text-ink-faint">({visible.length})</span>
             </h2>
             <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-ink-muted">
-              {description}
+              {description} Press j/k to move, Enter to open in the graph.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -285,10 +412,14 @@ export function FindingsView({
           <EmptyState title={emptyTitle} description={emptyDescription} />
         ) : (
           <ul className="divide-y divide-edge">
-            {visible.map((finding) => (
+            {visible.map((finding, index) => (
               <li
                 key={finding.id}
-                className={clsx('px-5 py-3', finding.dismissedAt && 'opacity-45')}
+                className={clsx(
+                  'px-5 py-3',
+                  finding.dismissedAt && 'opacity-45',
+                  index === cursor && 'bg-surface-2',
+                )}
               >
                 <div className="mb-1.5 flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
@@ -373,6 +504,66 @@ export function UnresolvedImportsView(): JSX.Element {
       description="Imports this scan could not follow to a file. Each one is a gap in the graph, so dependency and blast-radius results involving these files may be incomplete."
       emptyTitle="Every import resolved"
       emptyDescription="All import specifiers in this project resolved to a file or a known external package."
+    />
+  );
+}
+
+export function SyntaxErrorsView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="syntax-error"
+      title="Syntax errors"
+      description="Files the parser could not read as valid syntax. Reported for every inventoried text file, not only dependency-graph sources."
+      emptyTitle="No syntax errors"
+      emptyDescription="Every parsed file in this project is syntactically valid."
+    />
+  );
+}
+
+export function MergeConflictsView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="merge-conflict"
+      title="Merge conflicts"
+      description="Unresolved Git conflict markers left in project files."
+      emptyTitle="No merge conflicts"
+      emptyDescription="No file in this project contains unresolved conflict markers."
+    />
+  );
+}
+
+export function TodosView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="todo-comment"
+      title="TODO comments"
+      description="TODO, FIXME, and HACK comments found in inventoried text files."
+      emptyTitle="No TODO comments"
+      emptyDescription="No TODO, FIXME, or HACK comments were found."
+    />
+  );
+}
+
+export function DuplicatesView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="duplicate-code"
+      title="Duplicate code"
+      description="Normalised six-line blocks that appear more than once. This is a text match, not a semantic clone detector."
+      emptyTitle="No duplicated blocks"
+      emptyDescription="No six-line duplicated blocks were found among files read this scan."
+    />
+  );
+}
+
+export function ComplexityView(): JSX.Element {
+  return (
+    <FindingsView
+      findingType="complexity-hotspot"
+      title="Complexity hotspots"
+      description="Functions whose cyclomatic complexity is 10 or higher."
+      emptyTitle="No complexity hotspots"
+      emptyDescription="No function crossed the complexity threshold."
     />
   );
 }

@@ -1,12 +1,15 @@
 import type {
   BlastRadiusResult,
   DashboardStats,
+  DiffImpactResult,
   EdgeType,
   FileDetail,
+  FileOutlier,
   GraphNode,
   GraphPayload,
   NodeType,
   Project,
+  ProjectMetrics,
   RiskScore,
   SearchResult,
   SymbolKind,
@@ -23,9 +26,19 @@ import {
   splitByDepth,
   traverse,
 } from '../analysis/algorithms/blastRadius';
-import { computeRiskScore } from '../analysis/algorithms/riskScore';
+import { assignPercentiles, computeRiskScore } from '../analysis/algorithms/riskScore';
 import { isTestFile } from '../analysis/discovery';
 import { toPosixPath } from '../utils/glob';
+import { computeMartinMetrics } from '../analysis/algorithms/martin';
+import { computeDiffImpact } from '../analysis/algorithms/diffImpact';
+import { compareFingerprints } from '../analysis/algorithms/scanCompare';
+import { ownersForPath } from './codeowners';
+import {
+  declaredDependencyNames,
+  licenseInventory,
+  publicApiFromManifest,
+  readRootManifest,
+} from './licenseInventory';
 
 /**
  * Read-side queries over a completed scan.
@@ -56,17 +69,65 @@ export class AnalysisService {
     const projectId = project.id;
     const index = this.dependencyIndex(projectId);
     const cyclicNodes = nodesInCycles(detectCycles(index));
+    const inventoryCounts = this.store.projectFiles.countsByCapability(projectId);
+    const unavailableFiles =
+      inventoryCounts.excluded +
+      inventoryCounts.oversize +
+      inventoryCounts.unreadable +
+      inventoryCounts.symlink;
 
-    const topImpactFiles = this.store.files
-      .listByProject(projectId)
-      .map((file) => this.riskScore(projectId, fileNodeId(file.relativePath), index, cyclicNodes))
+    const ranked = this.withPercentiles(
+      this.store.files
+        .listByProject(projectId)
+        .map((file) => this.riskScore(projectId, fileNodeId(file.relativePath), index, cyclicNodes)),
+    );
+    const topImpactFiles = [...ranked]
       .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
       .slice(0, 10);
+
+    let comparison: DashboardStats['scanComparison'] = null;
+    try {
+      const snapshots = this.store.snapshots.latestTwo(projectId);
+      const currentSnap = snapshots[0];
+      const previousSnap = snapshots[1];
+      if (currentSnap) {
+        const diff = compareFingerprints(
+          Array.isArray(previousSnap?.fingerprints) ? previousSnap.fingerprints : [],
+          Array.isArray(currentSnap.fingerprints) ? currentSnap.fingerprints : [],
+        );
+        comparison = {
+          previousScanId: previousSnap?.scanId ?? null,
+          added: diff.added.length,
+          removed: diff.removed.length,
+          persisted: diff.persisted,
+          addedTitles: diff.added.slice(0, 8).map((entry) => entry.title ?? ''),
+          removedTitles: diff.removed.slice(0, 8).map((entry) => entry.title ?? ''),
+        };
+      }
+    } catch {
+      comparison = null;
+    }
+
+    let licenses: DashboardStats['licenses'] = [];
+    let publicApi: string[] = [];
+    try {
+      const rootManifest = readRootManifest(project.rootPath);
+      licenses = licenseInventory(project.rootPath, declaredDependencyNames(rootManifest));
+      publicApi = publicApiFromManifest(rootManifest);
+    } catch {
+      licenses = [];
+      publicApi = [];
+    }
 
     return {
       project,
       lastScan: this.store.scans.latestCompletedForProject(projectId),
-      totalFiles: this.store.files.countByProject(projectId),
+      totalFiles: inventoryCounts.total,
+      graphEligibleFiles: this.store.files.countByProject(projectId),
+      textOnlyFiles: inventoryCounts.textOnly,
+      binaryFiles: inventoryCounts.binary,
+      ignoredFiles: inventoryCounts.gitIgnored,
+      unavailableFiles,
       totalSymbols: this.store.symbols.countByProject(projectId),
       totalEdges: this.store.edges.countByProject(projectId),
       cycleCount: this.store.findings.countByType(projectId, 'circular-dependency'),
@@ -80,7 +141,15 @@ export class AnalysisService {
       ),
       unresolvedImportCount: this.store.findings.countByType(projectId, 'unresolved-import'),
       typeErrorCount: this.store.findings.countByType(projectId, 'type-error'),
+      syntaxErrorCount: this.store.findings.countByType(projectId, 'syntax-error'),
+      mergeConflictCount: this.store.findings.countByType(projectId, 'merge-conflict'),
+      todoCommentCount: this.store.findings.countByType(projectId, 'todo-comment'),
+      duplicateCodeCount: this.store.findings.countByType(projectId, 'duplicate-code'),
+      complexityHotspotCount: this.store.findings.countByType(projectId, 'complexity-hotspot'),
       topImpactFiles,
+      licenses,
+      publicApi,
+      scanComparison: comparison,
     };
   }
 
@@ -103,14 +172,21 @@ export class AnalysisService {
       .dependentsOf(nodeId)
       .some((dependent) => isTestFile(parseNodeId(dependent)?.path ?? ''));
 
-    return computeRiskScore({
-      nodeId,
-      index,
-      inCycle: cyclicNodes.has(nodeId),
-      reachableFromEntryPoint: reachable.has(nodeId),
-      unresolvedEdgeCount,
-      hasTestDependents,
-    });
+    return {
+      ...computeRiskScore({
+        nodeId,
+        index,
+        inCycle: cyclicNodes.has(nodeId),
+        reachableFromEntryPoint: reachable.has(nodeId),
+        unresolvedEdgeCount,
+        hasTestDependents,
+      }),
+      percentile: 0,
+    };
+  }
+
+  private withPercentiles(scores: RiskScore[]): RiskScore[] {
+    return assignPercentiles(scores);
   }
 
   blastRadius(request: BlastRadiusRequest): BlastRadiusResult {
@@ -204,15 +280,33 @@ export class AnalysisService {
 
     if (request.focusNodeId) {
       const depth = request.focusDepth ?? 2;
-      const focused = new Set<string>([request.focusNodeId]);
-
-      for (const direction of ['dependents', 'dependencies'] as const) {
-        const { entries } = traverse(index, request.focusNodeId, { maxDepth: depth, direction });
-        for (const entry of entries) focused.add(entry.nodeId);
+      const starts = [request.focusNodeId];
+      if (edgeTypes.includes('call')) {
+        const parsedFocus = parseNodeId(request.focusNodeId);
+        if (parsedFocus?.type === 'file') {
+          const file = files.find((entry) => entry.relativePath === parsedFocus.path);
+          if (file) {
+            for (const symbol of this.store.symbols.listByFile(file.id)) {
+              starts.push(symbolNodeId(file.relativePath, symbol.name));
+            }
+          }
+        }
       }
 
-      candidateIds = new Set([...candidateIds].filter((id) => focused.has(id)));
-      // The focus node itself must be present even if a folder filter excluded it.
+      const focused = new Set<string>(starts);
+      for (const start of starts) {
+        for (const direction of ['dependents', 'dependencies'] as const) {
+          const { entries } = traverse(index, start, { maxDepth: depth, direction });
+          for (const entry of entries) focused.add(entry.nodeId);
+        }
+      }
+
+      candidateIds = new Set(
+        [...candidateIds, ...starts].filter((id) => focused.has(id) || starts.includes(id)),
+      );
+      for (const id of focused) {
+        if (id.startsWith('symbol:')) candidateIds.add(id);
+      }
       candidateIds.add(request.focusNodeId);
     }
 
@@ -249,29 +343,39 @@ export class AnalysisService {
     for (const id of visibleIds) {
       const parsed = parseNodeId(id);
       const path = parsed?.path ?? id;
-      const label = path.split('/').pop() ?? path;
+      const isSymbol = parsed?.type === 'symbol';
+      const label = parsed?.symbolName ?? path.split('/').pop() ?? path;
 
       nodes.push({
         id,
-        type: 'file',
+        type: isSymbol ? 'symbol' : 'file',
         label,
-        path,
+        path: isSymbol && parsed?.symbolName ? `${path}#${parsed.symbolName}` : path,
         isEntryPoint: entryPoints.has(id),
         inCycle: cyclicNodes.has(id),
-        ...(knownPaths.has(path) ? {} : { symbolKind: 'unknown' as SymbolKind }),
+        ...(isSymbol
+          ? { symbolKind: 'unknown' as SymbolKind }
+          : knownPaths.has(path)
+            ? {}
+            : { symbolKind: 'unknown' as SymbolKind }),
       });
     }
 
-    if (nodeTypes.has('symbol')) {
+    if (nodeTypes.has('symbol') || (edgeTypes.includes('call') && request.focusNodeId)) {
       for (const file of files) {
         const parentId = fileNodeId(file.relativePath);
-        if (!visible.has(parentId)) continue;
 
         for (const symbol of this.store.symbols.listByFile(file.id)) {
-          if (!symbol.isExported) continue;
           if (nodes.length >= GRAPH_NODE_HARD_LIMIT) break;
-
           const id = symbolNodeId(file.relativePath, symbol.name);
+          if (visible.has(id)) continue;
+          const parentVisible = visible.has(parentId);
+          if (!parentVisible && !visible.has(id)) continue;
+          if (!symbol.isExported && !edgeTypes.includes('call')) continue;
+          if (edgeTypes.includes('call') && !nodeTypes.has('symbol')) {
+            const hasCall = index.edgesFrom(id).length + index.edgesTo(id).length > 0;
+            if (!hasCall) continue;
+          }
           visible.add(id);
           nodes.push({
             id,
@@ -303,6 +407,7 @@ export class AnalysisService {
         target: edge.toNodeId,
         edgeType: edge.edgeType,
         unresolved: edge.metadata.unresolved === true,
+        typeOnly: edge.metadata.isTypeOnly === true,
       });
     }
 
@@ -356,7 +461,10 @@ export class AnalysisService {
     }
 
     if (types.has('symbol')) {
-      for (const symbol of this.store.symbols.search(projectId, query, limit)) {
+      const kinds = request.kinds ? new Set(request.kinds) : null;
+      for (const symbol of this.store.symbols.search(projectId, query, limit * 4)) {
+        if (request.exportedOnly && !symbol.isExported) continue;
+        if (kinds && !kinds.has(symbol.kind)) continue;
         results.push({
           nodeId: symbolNodeId(symbol.relativePath, symbol.name),
           type: 'symbol',
@@ -386,14 +494,114 @@ export class AnalysisService {
 
     const dependents = traverse(index, fileId, { maxDepth: 1, direction: 'dependents' });
     const dependencies = traverse(index, fileId, { maxDepth: 1, direction: 'dependencies' });
+    const allDependents = traverse(index, fileId, { maxDepth: 25, direction: 'dependents' });
+    const testDependents = allDependents.entries.filter((entry) => isTestFile(entry.path));
+    const entryPoints = this.entryPointNodeIds(projectId);
+    const covering = allDependents.entries
+      .filter((entry) => entryPoints.includes(entry.nodeId))
+      .map((entry) => entry.path);
+    if (entryPoints.includes(fileId)) covering.unshift(file.relativePath);
+
+    const symbols = this.store.symbols.listByFile(file.id);
+    const maxComplexity = symbols.reduce<number | null>((max, symbol) => {
+      const value = symbol.metadata.complexity;
+      if (value === undefined) return max;
+      return max === null ? value : Math.max(max, value);
+    }, null);
+    const maxLcom = symbols.reduce<number | null>((max, symbol) => {
+      const value = symbol.metadata.lcom;
+      if (value === undefined) return max;
+      return max === null ? value : Math.max(max, value);
+    }, null);
+
+    const allScores = this.withPercentiles(
+      this.store.files
+        .listByProject(projectId)
+        .map((entry) => this.riskScore(projectId, fileNodeId(entry.relativePath), index, cyclicNodes)),
+    );
+    const mine = allScores.find((entry) => entry.nodeId === fileId || entry.nodeId === nodeId);
 
     return {
       file,
-      symbols: this.store.symbols.listByFile(file.id),
+      symbols,
       directDependencies: dependencies.entries,
       directDependents: dependents.entries,
-      riskScore: this.riskScore(projectId, nodeId, index, cyclicNodes),
+      riskScore: mine ?? this.riskScore(projectId, nodeId, index, cyclicNodes),
       inCycle: cyclicNodes.has(fileId),
+      fanIn: index.edgesTo(fileId).length,
+      fanOut: index.edgesFrom(fileId).length,
+      testDependents,
+      entryPointsCovering: [...new Set(covering)],
+      owners:
+        ownersForPath(
+          this.store.projects.findById(projectId)?.rootPath ?? '',
+          file.relativePath,
+        ) ?? [],
+      maxComplexity,
+      maxLcom,
+    };
+  }
+
+  diffImpact(projectId: number, changedPaths: readonly string[]): DiffImpactResult {
+    return computeDiffImpact({
+      changedPaths,
+      index: this.dependencyIndex(projectId),
+      entryPoints: this.store.files
+        .listByProject(projectId)
+        .filter((file) => file.isEntryPoint)
+        .map((file) => file.relativePath),
+    });
+  }
+
+  folderMetrics(projectId: number): ProjectMetrics {
+    const files = this.store.files.listByProject(projectId);
+    const composition = new Map<
+      string,
+      { folder: string; fileCount: number; abstractFileCount: number }
+    >();
+    const index = this.dependencyIndex(projectId);
+    const outliers: FileOutlier[] = [];
+
+    for (const file of files) {
+      const parts = file.relativePath.split('/');
+      const folder = parts.length > 1 ? parts.slice(0, Math.min(2, parts.length - 1)).join('/') : '.';
+      const current = composition.get(folder) ?? { folder, fileCount: 0, abstractFileCount: 0 };
+      current.fileCount += 1;
+      const symbols = this.store.symbols.listByFile(file.id);
+      if (symbols.some((symbol) => symbol.kind === 'interface' || symbol.kind === 'type')) {
+        current.abstractFileCount += 1;
+      }
+      composition.set(folder, current);
+
+      const nodeId = fileNodeId(file.relativePath);
+      const inventory = this.store.projectFiles.findByPath(projectId, file.relativePath);
+      outliers.push({
+        relativePath: file.relativePath,
+        sizeBytes: inventory?.sizeBytes ?? 0,
+        symbolCount: symbols.length,
+        fanIn: index.edgesTo(nodeId).length,
+        fanOut: index.edgesFrom(nodeId).length,
+      });
+    }
+
+    const coupling = this.store.edges
+      .listByProject(projectId)
+      .filter((edge) => DEPENDENCY_EDGE_TYPES.includes(edge.edgeType) && !edge.metadata.unresolved)
+      .map((edge) => ({
+        fromPath: parseNodeId(edge.fromNodeId)?.path ?? '',
+        toPath: parseNodeId(edge.toNodeId)?.path ?? '',
+      }))
+      .filter((edge) => edge.fromPath.length > 0 && edge.toPath.length > 0);
+
+    const ranked = [...outliers].sort(
+      (left, right) =>
+        right.sizeBytes + right.symbolCount * 80 + right.fanIn * 40 -
+          (left.sizeBytes + left.symbolCount * 80 + left.fanIn * 40),
+    );
+
+    return {
+      folders: computeMartinMetrics(coupling, [...composition.values()]),
+      outliers: ranked.slice(0, 25),
     };
   }
 

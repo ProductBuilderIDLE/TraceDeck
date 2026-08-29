@@ -172,3 +172,89 @@ describe('graph determinism', () => {
     expect(rebuilt.unresolved).toEqual(graph.unresolved);
   });
 });
+
+describe('call edges', () => {
+  const SYNTHETIC_ROOT = resolve(__dirname, '../../fixtures/synthetic-calls');
+
+  /**
+   * Builds a graph from source text alone. The resolver reads no filesystem, working only
+   * from the known-file index, so these paths never need to exist on disk.
+   */
+  function buildFrom(sources: Record<string, string>): BuiltGraph {
+    const built: FileToBuild[] = Object.entries(sources).map(([relativePath, source]) => {
+      const absolutePath = resolve(SYNTHETIC_ROOT, relativePath);
+      return { relativePath, absolutePath, parsed: parseSourceFile(absolutePath, source) };
+    });
+
+    return buildGraph(built, {
+      rootPath: SYNTHETIC_ROOT,
+      tsConfig: loadProjectTsConfig(SYNTHETIC_ROOT),
+      knownFiles: buildKnownFileIndex(built.map((file) => toPosixPath(file.absolutePath))),
+    });
+  }
+
+  function callEdges(built: BuiltGraph) {
+    return built.edges.filter((edge) => edge.edgeType === 'call');
+  }
+
+  const API = `export function send(message: string) {\n  return message;\n}\n`;
+
+  it('does not attribute a method call to an import that shares its name', () => {
+    // The regression: `logger.send()` and the imported `send` share a member name and
+    // nothing else, but name-only matching produced an edge into the imported module.
+    const built = buildFrom({
+      'src/api.ts': API,
+      'src/app.ts': `import { send } from './api';\nconst logger = { send(_m: string) {} };\nexport function run() {\n  logger.send('hi');\n}\n`,
+    });
+
+    expect(
+      callEdges(built).some((edge) => edge.toNodeId === 'symbol:src/api.ts#send'),
+    ).toBe(false);
+  });
+
+  it('still records a direct call to an imported function', () => {
+    const built = buildFrom({
+      'src/api.ts': API,
+      'src/app.ts': `import { send } from './api';\nexport function run() {\n  send('hi');\n}\n`,
+    });
+
+    expect(
+      callEdges(built).some(
+        (edge) =>
+          edge.fromNodeId === 'file:src/app.ts' && edge.toNodeId === 'symbol:src/api.ts#send',
+      ),
+    ).toBe(true);
+  });
+
+  it('follows a call made through a namespace import', () => {
+    // `api.send()` names exactly one target, because `api` can only be the imported module.
+    const built = buildFrom({
+      'src/api.ts': API,
+      'src/app.ts': `import * as api from './api';\nexport function run() {\n  api.send('hi');\n}\n`,
+    });
+
+    const edge = callEdges(built).find((item) => item.toNodeId === 'symbol:src/api.ts#send');
+
+    expect(edge).toBeDefined();
+    expect(edge?.metadata).toMatchObject({ callee: 'send', calleeReceiver: 'api' });
+  });
+
+  it('does not attribute a method call to a local function of the same name', () => {
+    const built = buildFrom({
+      'src/app.ts': `export function step() {}\nexport class Runner {\n  run() {\n    this.step();\n  }\n  step() {}\n}\n`,
+    });
+
+    expect(
+      callEdges(built).some((edge) => edge.toNodeId === 'symbol:src/app.ts#step'),
+    ).toBe(false);
+  });
+
+  it('ignores a namespace-shaped call whose receiver is not an import', () => {
+    const built = buildFrom({
+      'src/api.ts': API,
+      'src/app.ts': `import './api';\nconst api = { send(_m: string) {} };\nexport function run() {\n  api.send('hi');\n}\n`,
+    });
+
+    expect(callEdges(built)).toHaveLength(0);
+  });
+});

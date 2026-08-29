@@ -1,9 +1,12 @@
-import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
-import { ALWAYS_EXCLUDED_DIRS, MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
+import { MAX_TYPE_DIAGNOSTICS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
-import type { ProjectTsConfig } from './tsconfig';
+import { discoverTsConfigs, type ProjectTsConfig } from './tsconfig';
+
+export { discoverTsConfigs } from './tsconfig';
 
 export type DiagnosticCategory = 'error' | 'warning' | 'suggestion' | 'message';
 
@@ -40,12 +43,6 @@ const CATEGORY_MAP: Record<ts.DiagnosticCategory, DiagnosticCategory> = {
   [ts.DiagnosticCategory.Message]: 'message',
 };
 
-const CONFIG_FILENAMES = ['tsconfig.json', 'jsconfig.json'];
-const excludedDirNames = new Set(ALWAYS_EXCLUDED_DIRS);
-
-/** How many compiler configurations one scan will check before stopping. */
-const MAX_CONFIGS = 12;
-
 export interface DiagnosticsOptions {
   rootPath: string;
   tsConfig: ProjectTsConfig;
@@ -58,47 +55,6 @@ function isInsideProject(fileName: string, rootPath: string): boolean {
   const relativePath = relative(rootPath, fileName);
   if (relativePath.startsWith('..') || relativePath.length === 0) return false;
   return !toPosixPath(relativePath).includes('node_modules/');
-}
-
-/**
- * Finds every compiler configuration in the project.
- *
- * A monorepo commonly has no `tsconfig.json` at its root at all — the root holds a
- * `tsconfig.base.json` that packages extend, and the real configurations live one or two
- * levels down in each app. Looking only at the root silently skips type checking for exactly
- * the projects that need it most.
- */
-export function discoverTsConfigs(rootPath: string, maxDepth = 3): string[] {
-  const found: string[] = [];
-
-  const walk = (directory: string, depth: number): void => {
-    if (depth > maxDepth || found.length >= MAX_CONFIGS) return;
-
-    for (const name of CONFIG_FILENAMES) {
-      const candidate = join(directory, name);
-      if (existsSync(candidate)) {
-        found.push(candidate);
-        // One configuration per directory is enough; tsconfig wins over jsconfig.
-        break;
-      }
-    }
-
-    let entries;
-    try {
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      if (excludedDirNames.has(entry.name)) continue;
-      walk(join(directory, entry.name), depth + 1);
-    }
-  };
-
-  walk(rootPath, 0);
-  return found;
 }
 
 interface ResolvedConfig {
@@ -168,8 +124,8 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
   if (rootConfig) {
     configs.push(rootConfig);
   } else {
-    const discovered = discoverTsConfigs(rootPath);
-    for (const configPath of discovered) {
+    const discovery = discoverTsConfigs(rootPath);
+    for (const configPath of discovery.configPaths) {
       const parsed = parseConfig(configPath);
       if (parsed) configs.push(parsed);
     }
@@ -180,9 +136,16 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
           'configurations found in the project was checked separately.',
       );
     }
-    if (discovered.length >= MAX_CONFIGS) {
+    if (discovery.truncated) {
       limitations.push(
-        `Only the first ${MAX_CONFIGS} compiler configurations were checked.`,
+        `Only the first ${discovery.configPaths.length} compiler configurations were checked; ` +
+          `${discovery.omittedCount} additional configuration(s) were omitted.`,
+      );
+    }
+    if (discovery.depthLimited) {
+      limitations.push(
+        `Compiler configuration discovery stopped at directory depth ${discovery.maxDepth}; ` +
+          'deeper configurations may have been omitted.',
       );
     }
   }
@@ -223,17 +186,28 @@ export function runTypeScriptDiagnostics(options: DiagnosticsOptions): Diagnosti
 
     let program: ts.Program;
     try {
-      program = ts.createProgram({
+      const infoKey = createHash('sha256').update(config.configPath).digest('hex').slice(0, 16);
+      const cacheDir = join(rootPath, '.tracedeck', 'cache');
+      mkdirSync(cacheDir, { recursive: true });
+      const tsBuildInfoFile = join(cacheDir, `${infoKey}.tsbuildinfo`);
+      const options: ts.CompilerOptions = {
+        ...config.options,
+        incremental: true,
+        tsBuildInfoFile,
+        noEmit: false,
+        emitDeclarationOnly: false,
+        noEmitOnError: false,
+      };
+      const host = ts.createIncrementalCompilerHost(options);
+      const incremental = ts.createIncrementalProgram({
         rootNames: config.fileNames,
-        options: {
-          ...config.options,
-          // Nothing is ever written to disk; only the diagnostics are wanted.
-          noEmit: true,
-          emitDeclarationOnly: false,
-          incremental: false,
-          tsBuildInfoFile: undefined,
-        },
+        options,
+        host,
       });
+      incremental.emit(undefined, (fileName, text, writeByteOrderMark) => {
+        if (fileName.endsWith('.tsbuildinfo')) host.writeFile(fileName, text, writeByteOrderMark);
+      });
+      program = incremental.getProgram();
     } catch (error) {
       limitations.push(
         `${toPosixPath(relative(rootPath, config.configPath))} could not be type checked: ${

@@ -1,0 +1,5 @@
+{
+  "name": "asset-heavy-project",
+  "private": true,
+  "type": "module"
+}

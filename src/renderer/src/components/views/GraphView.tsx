@@ -9,12 +9,15 @@ import {
   Loader2,
   Maximize2,
   RefreshCcw,
+  Download,
   Search,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type { EdgeType, GraphPayload } from '@shared/types';
-import { GRAPH_NODE_SOFT_LIMIT } from '@shared/constants';
+import type { EdgeType, NodeType, GraphPayload } from '@shared/types';
+import { SpaceCanvas } from './SpaceCanvas';
+import { detectCommunities, type Community } from '@shared/communities';
+import { GRAPH_NODE_HARD_LIMIT, GRAPH_NODE_SOFT_LIMIT } from '@shared/constants';
 import { parseNodeId } from '@shared/nodeIds';
 import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
@@ -39,6 +42,7 @@ const EDGE_FILTERS: Array<{ id: EdgeType; label: string }> = [
   { id: 're-export', label: 'Re-exports' },
   { id: 'dynamic-import', label: 'Dynamic' },
   { id: 'require', label: 'require()' },
+  { id: 'call', label: 'Calls' },
 ];
 
 /**
@@ -47,7 +51,7 @@ const EDGE_FILTERS: Array<{ id: EdgeType; label: string }> = [
  * the same colour between sessions without anything being stored.
  */
 function folderOf(path: string): string {
-  const segments = path.split('/');
+  const segments = (path ?? '').split('/');
   if (segments.length <= 1) return '(root)';
   // Two levels for monorepo layouts like apps/web, one otherwise.
   if ((segments[0] === 'apps' || segments[0] === 'packages') && segments.length > 2) {
@@ -56,17 +60,14 @@ function folderOf(path: string): string {
   return segments[0] as string;
 }
 
-function hueFor(folder: string): number {
-  let hash = 0;
-  for (let index = 0; index < folder.length; index += 1) {
-    hash = (hash * 31 + folder.charCodeAt(index)) % 360;
-  }
-  // Golden-angle spread keeps neighbouring folder names visually far apart.
-  return (hash * 137.508) % 360;
-}
-
-function folderColor(folder: string, dark: boolean): string {
-  const hue = Math.round(hueFor(folder));
+/**
+ * Colours a node by the community it belongs to rather than the folder it sits in.
+ *
+ * Hues step by the golden angle so that consecutive communities land far apart on the wheel
+ * and stay distinguishable well past the handful of groups a folder palette could separate.
+ */
+function communityColor(community: number, dark: boolean): string {
+  const hue = Math.round((community * 137.508) % 360);
   // Commas, not spaces: Cytoscape cannot parse the modern hsl() syntax.
   return dark ? `hsl(${hue}, 62%, 58%)` : `hsl(${hue}, 65%, 45%)`;
 }
@@ -87,6 +88,10 @@ function readPalette() {
     dependent: tokenColor('brand'),
     edge: tokenColor('surface-4'),
     unresolved: tokenColor('ink-faint'),
+    added: tokenColor('risk-low'),
+    removed: tokenColor('risk-crit'),
+    baseline: tokenColor('ink-muted'),
+    target: tokenColor('brand'),
   };
 }
 
@@ -127,6 +132,18 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       style: { 'border-color': colors.cycle, 'border-width': 3, 'border-style': 'double' },
     },
     {
+      // A gathered node keeps its community colour and gains a ring, so a multi-selection
+      // reads as "these ones" without hiding what the colours were saying.
+      selector: 'node.multi',
+      style: {
+        'border-color': colors.selected,
+        'border-width': 4,
+        'border-style': 'solid',
+        'border-opacity': 1,
+        'z-index': 28,
+      },
+    },
+    {
       selector: 'node.selected',
       style: {
         'background-color': colors.selected,
@@ -149,6 +166,7 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       style: { 'border-color': colors.dependency, 'border-width': 3, 'background-opacity': 0.5, 'z-index': 20 },
     },
     { selector: 'node.faded', style: { opacity: 0.12 } },
+    { selector: 'node.blast', style: { 'border-color': colors.selected, 'border-width': 4, 'z-index': 25 } },
     { selector: 'node.hidden', style: { display: 'none' } },
     {
       selector: 'edge',
@@ -190,7 +208,28 @@ function buildStyle(colors: GraphPalette): cytoscape.StylesheetJson {
       },
     },
     { selector: 'edge.faded', style: { opacity: 0.04 } },
+    { selector: 'edge.blast', style: { width: 2.4, 'line-color': colors.selected, 'target-arrow-color': colors.selected, 'line-opacity': 1 } },
     { selector: 'edge.hidden', style: { display: 'none' } },
+    {
+      selector: 'node.added',
+      style: { 'border-color': colors.added, 'background-color': colors.added, 'background-opacity': 1 },
+    },
+    {
+      selector: 'node.removed',
+      style: { 'border-color': colors.removed, 'background-color': colors.removed, 'background-opacity': 1 },
+    },
+    { selector: 'node.baseline', style: { 'border-color': colors.baseline, 'border-style': 'dashed' } },
+    { selector: 'node.target', style: { 'border-color': colors.target } },
+    { selector: 'edge.added', style: { 'line-color': colors.added, 'target-arrow-color': colors.added } },
+    {
+      selector: 'edge.removed',
+      style: { 'line-color': colors.removed, 'target-arrow-color': colors.removed, 'line-style': 'dashed' },
+    },
+    {
+      selector: 'edge.baseline',
+      style: { 'line-color': colors.baseline, 'target-arrow-color': colors.baseline, 'line-style': 'dashed' },
+    },
+    { selector: 'edge.target', style: { 'line-color': colors.target, 'target-arrow-color': colors.target } },
   ];
 }
 
@@ -226,18 +265,34 @@ function layoutOptions(name: LayoutName, nodeCount: number): LayoutOptions {
   return { ...base, name: 'breadthfirst', directed: true, spacingFactor: 1.1 } as LayoutOptions;
 }
 
-function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
+function reviewClassFor(meta: { side?: 'baseline' | 'target'; delta?: 'added' | 'removed' }): string | undefined {
+  const classes: string[] = [];
+  if (meta.side) classes.push(meta.side);
+  if (meta.delta) classes.push(meta.delta);
+  return classes.length > 0 ? classes.join(' ') : undefined;
+}
+
+function toElements(
+  payload: GraphPayload,
+  dark: boolean,
+  communityById: ReadonlyMap<string, number>,
+  nodeClasses?: ReadonlyMap<string, string | undefined>,
+  edgeClasses?: ReadonlyMap<string, string | undefined>,
+): ElementDefinition[] {
   const degree = new Map<string, number>();
-  for (const edge of payload.edges) {
+  const graphEdges = payload.edges ?? [];
+  const graphNodes = payload.nodes ?? [];
+  for (const edge of graphEdges) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
   }
 
-  const nodes: ElementDefinition[] = payload.nodes.map((node) => {
+  const nodes: ElementDefinition[] = graphNodes.map((node) => {
     const connections = degree.get(node.id) ?? 0;
     // Area grows with connectivity but is damped, so one hub cannot dwarf everything else.
     const size = Math.round(Math.min(60, 18 + Math.sqrt(connections) * 7));
-    const folder = folderOf(node.path);
+    const folder = folderOf(node.path ?? '');
+    const community = communityById.get(node.id) ?? 0;
 
     return {
       data: {
@@ -245,26 +300,85 @@ function toElements(payload: GraphPayload, dark: boolean): ElementDefinition[] {
         label: node.label,
         path: node.path,
         folder,
-        color: folderColor(folder, dark),
+        community,
+        color: communityColor(community, dark),
         size,
         degree: connections,
         inCycle: node.inCycle ? 1 : 0,
         isEntry: node.isEntryPoint ? 1 : 0,
       },
+      classes: nodeClasses?.get(node.id),
     };
   });
 
-  const edges: ElementDefinition[] = payload.edges.map((edge) => ({
+  const edges: ElementDefinition[] = graphEdges.map((edge) => ({
     data: {
       id: edge.id,
       source: edge.source,
       target: edge.target,
       edgeType: edge.edgeType,
       unresolved: edge.unresolved ? 1 : 0,
+      typeOnly: edge.typeOnly ? 1 : 0,
     },
+    classes: edgeClasses?.get(edge.id),
   }));
 
   return [...nodes, ...edges];
+}
+
+interface SavedGraphView {
+  name: string;
+  folderPrefix: string;
+  edgeTypes: EdgeType[];
+  hideTypeOnly: boolean;
+  collapseBarrels: boolean;
+  layout: LayoutName;
+}
+
+const SAVED_VIEWS_KEY = 'tracedeck.graph-views';
+
+function loadSavedViews(): SavedGraphView[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) ?? '[]') as SavedGraphView[];
+    return Array.isArray(parsed) ? parsed.slice(0, 12) : [];
+  } catch {
+    return [];
+  }
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function graphToSvg(cy: Core): string {
+  const bb = cy.elements().boundingBox();
+  const pad = 48;
+  const width = Math.max(1, bb.w + pad * 2);
+  const height = Math.max(1, bb.h + pad * 2);
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="${bb.x1 - pad} ${bb.y1 - pad} ${width} ${height}">`,
+    '<rect width="100%" height="100%" fill="transparent"/>',
+  ];
+  cy.edges().forEach((edge) => {
+    const source = edge.source().position();
+    const target = edge.target().position();
+    parts.push(
+      `<line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="#7a8494" stroke-width="1"/>`,
+    );
+  });
+  cy.nodes().forEach((node) => {
+    const position = node.position();
+    const color = String(node.data('color') ?? '#7a8494');
+    const radius = Number(node.data('size') ?? 18) / 2;
+    parts.push(
+      `<circle cx="${position.x}" cy="${position.y}" r="${radius}" fill="${escapeXml(color)}" fill-opacity="0.8"/>`,
+    );
+    parts.push(
+      `<text x="${position.x}" y="${position.y + radius + 10}" font-size="9" text-anchor="middle" fill="#9aa4b5">${escapeXml(String(node.data('label') ?? ''))}</text>`,
+    );
+  });
+  parts.push('</svg>');
+  return parts.join('');
 }
 
 export function GraphView(): JSX.Element {
@@ -274,13 +388,21 @@ export function GraphView(): JSX.Element {
   const project = useAppStore((state) => state.currentProject);
   const stats = useAppStore((state) => state.stats);
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
+  const multiSelectedNodeIds = useUiStore((state) => state.multiSelectedNodeIds);
   const selectNode = useUiStore((state) => state.selectNode);
   const openCode = useUiStore((state) => state.openCode);
+  const highlightNodeIds = useUiStore((state) => state.highlightNodeIds);
+  const graphSliceEdgeTypes = useUiStore((state) => state.graphSliceEdgeTypes);
+  const setGraphSliceEdgeTypes = useUiStore((state) => state.setGraphSliceEdgeTypes);
+  const reviewGraphOverlay = useUiStore((state) => state.reviewGraphOverlay);
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
   const themeRevision = useUiStore((state) => state.themeRevision);
   const themeId = useUiStore((state) => state.theme);
   const isDark = !themeId.includes('light');
 
   const [payload, setPayload] = useState<GraphPayload | null>(null);
+  const [mode, setMode] = useState<'2d' | '360'>('2d');
+  const [communities, setCommunities] = useState<Community[]>([]);
   const [loading, setLoading] = useState(false);
   const [layout, setLayout] = useState<LayoutName>('fcose');
   const [edgeTypes, setEdgeTypes] = useState<Set<EdgeType>>(
@@ -290,28 +412,49 @@ export function GraphView(): JSX.Element {
   const [focusMode, setFocusMode] = useState(false);
   const [folderPrefix, setFolderPrefix] = useState('');
   const [search, setSearch] = useState('');
+  const [hideTypeOnly, setHideTypeOnly] = useState(false);
+  const [collapseBarrels, setCollapseBarrels] = useState(false);
+  const [savedViews, setSavedViews] = useState<SavedGraphView[]>(() => loadSavedViews());
+  const [viewName, setViewName] = useState('');
+  const [minimap, setMinimap] = useState<{
+    nodes: Array<{ x: number; y: number; color: string }>;
+    view: { x: number; y: number; w: number; h: number };
+  } | null>(null);
 
   // Only the focus root belongs in the query key. Selecting a node while focus mode is off
   // must not refetch or re-lay-out the graph — that was what made clicking feel broken.
-  const focusRoot = focusMode ? selectedNodeId : null;
+  const focusRoot = focusMode && !reviewGraphOverlay ? selectedNodeId : null;
+
+  const effectivePayload = useMemo(
+    () => reviewGraphOverlay?.payload ?? payload,
+    [reviewGraphOverlay, payload],
+  );
+  const effectiveMode: '2d' | '360' = reviewGraphOverlay ? '2d' : mode;
+  const isOverlayActive = Boolean(reviewGraphOverlay);
 
   const folders = useMemo(() => {
     const set = new Set<string>();
-    for (const node of payload?.nodes ?? []) set.add(folderOf(node.path));
+    for (const node of effectivePayload?.nodes ?? []) set.add(folderOf(node.path));
     return [...set].sort();
-  }, [payload]);
+  }, [effectivePayload]);
 
   const load = useCallback(async () => {
-    if (!project) return;
+    if (!project || reviewGraphOverlay) return;
     setLoading(true);
     try {
       const result = await invoke('graph:query', {
         projectId: project.id,
-        edgeTypes: [...edgeTypes],
+        edgeTypes: graphSliceEdgeTypes ?? [...edgeTypes],
         includeUnresolved,
-        nodeLimit: GRAPH_NODE_SOFT_LIMIT,
+        // The soft limit exists because canvas hit-testing degrades past it. The 360 view
+        // draws through WebGL and does not share that ceiling, so it asks for the hard limit
+        // and shows more of the project at once.
+        nodeLimit: effectiveMode === '360' ? GRAPH_NODE_HARD_LIMIT : GRAPH_NODE_SOFT_LIMIT,
         ...(folderPrefix ? { folderPrefix } : {}),
         ...(focusRoot ? { focusNodeId: focusRoot, focusDepth: 2 } : {}),
+        ...(graphSliceEdgeTypes?.includes('call')
+          ? { nodeTypes: ['file', 'symbol'] as NodeType[] }
+          : {}),
       });
       setPayload(result);
     } catch {
@@ -319,11 +462,12 @@ export function GraphView(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot]);
+  }, [project, edgeTypes, includeUnresolved, folderPrefix, focusRoot, graphSliceEdgeTypes, effectiveMode, reviewGraphOverlay]);
 
   useEffect(() => {
+    if (reviewGraphOverlay) return;
     void load();
-  }, [load, stats]);
+  }, [load, stats, reviewGraphOverlay]);
 
   useEffect(() => {
     if (!containerRef.current || cyRef.current) return;
@@ -336,17 +480,106 @@ export function GraphView(): JSX.Element {
       wheelSensitivity: 2.2,
       minZoom: 0.04,
       maxZoom: 4,
+      // Shift-drag sweeps a box. Cytoscape's own selection model is used only to read what
+      // the box caught; the set the app acts on is `multiSelectedNodeIds`.
+      boxSelectionEnabled: true,
       style: buildStyle(readPalette()),
     });
 
-    cy.on('tap', 'node', (event) => selectNode(event.target.id() as string));
+    cy.on('tap', 'node', (event) => {
+      const store = useUiStore.getState();
+      if (store.reviewGraphOverlay) {
+        store.clearMultiSelect();
+        return;
+      }
+      const id = event.target.id() as string;
+      const original = event.originalEvent as MouseEvent | undefined;
+      // metaKey so the shortcut works the same way on macOS.
+      const additive = original?.ctrlKey === true || original?.metaKey === true;
+
+      if (additive && original?.shiftKey === true) {
+        const store = useUiStore.getState();
+        // The clicked node counts as part of the set, so the shortcut works even when it is
+        // the only thing wanted and nothing was gathered first.
+        const gathered = store.multiSelectedNodeIds.includes(id)
+          ? store.multiSelectedNodeIds
+          : [...store.multiSelectedNodeIds, id];
+        const paths = gathered
+          .map((nodeId) => parseNodeId(nodeId))
+          .filter((parsed) => parsed !== null && parsed.type !== 'folder')
+          .map((parsed) => parsed!.path);
+        store.openPaths(paths);
+        return;
+      }
+
+      if (additive) {
+        useUiStore.getState().toggleMultiSelect(id);
+        return;
+      }
+
+      useUiStore.getState().clearMultiSelect();
+      selectNode(id);
+    });
+    // Whether the sweep that is starting should also open what it catches. Read at the
+    // start of the drag, because by the time the box closes the keys may already be up.
+    let sweepOpens = false;
+    // Set while a sweep finishes. Cytoscape should treat a drag as a drag rather than a
+    // tap, but if a core tap does arrive on mouse-up it would clear the set the sweep just
+    // built — the feature would look like it did nothing.
+    let sweepJustEnded = false;
+
+    cy.on('boxstart', (event) => {
+      const original = event.originalEvent as MouseEvent | undefined;
+      sweepOpens = original?.ctrlKey === true || original?.metaKey === true;
+      // A leftover tap-selection would otherwise be read as part of the box's catch.
+      cy.nodes().unselect();
+    });
+
+    cy.on('boxend', () => {
+      if (useUiStore.getState().reviewGraphOverlay) {
+        cy.nodes(':selected').unselect();
+        return;
+      }
+      const caught = cy.nodes(':selected');
+      const ids = caught.map((node) => node.id() as string);
+      cy.nodes().unselect();
+      if (ids.length === 0) return;
+
+      const store = useUiStore.getState();
+      store.addToMultiSelect(ids);
+
+      sweepJustEnded = true;
+      setTimeout(() => {
+        sweepJustEnded = false;
+      }, 0);
+
+      if (!sweepOpens) return;
+      const paths = [...new Set([...store.multiSelectedNodeIds, ...ids])]
+        .map((nodeId) => parseNodeId(nodeId))
+        .filter((parsed) => parsed !== null && parsed.type !== 'folder')
+        .map((parsed) => parsed!.path);
+      store.openPaths(paths);
+    });
+
     cy.on('dbltap', 'node', (event) => {
+      if (useUiStore.getState().reviewGraphOverlay) return;
       const parsed = parseNodeId(event.target.id() as string);
       if (parsed && parsed.type !== 'folder') openCode(parsed.path);
     });
     cy.on('tap', (event) => {
-      if (event.target === cy) selectNode(null);
+      if (event.target !== cy || sweepJustEnded) return;
+      const store = useUiStore.getState();
+      if (store.reviewGraphOverlay) {
+        store.clearMultiSelect();
+        return;
+      }
+      store.clearMultiSelect();
+      selectNode(null);
     });
+    // Hovering deliberately does nothing. Highlighting a neighbourhood on mouseover faded
+    // and unfaded the whole canvas every time the pointer crossed a node, which in a dense
+    // graph is a full-screen flash repeating several times a second — a photosensitivity
+    // hazard. Clicking still highlights the neighbourhood, and it holds until you clear it.
 
     cyRef.current = cy;
     return () => {
@@ -361,22 +594,76 @@ export function GraphView(): JSX.Element {
     if (!cy) return;
     cy.style(buildStyle(readPalette()));
     cy.nodes().forEach((node) => {
-      node.data('color', folderColor(node.data('folder') as string, isDark));
+      node.data('color', communityColor((node.data('community') as number) ?? 0, isDark));
     });
   }, [themeRevision, isDark]);
 
   // Rebuild elements only when the data actually changes.
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !payload) return;
+    if (!cy || !effectivePayload) return;
+
+    const nodeClasses = reviewGraphOverlay
+      ? new Map<string, string | undefined>(
+          Object.entries(reviewGraphOverlay.nodeMeta).map(([id, meta]) => [id, reviewClassFor(meta)]),
+        )
+      : undefined;
+    const edgeClasses = reviewGraphOverlay
+      ? new Map<string, string | undefined>(
+          Object.entries(reviewGraphOverlay.edgeMeta).map(([id, meta]) => [id, reviewClassFor(meta)]),
+        )
+      : undefined;
 
     cy.batch(() => {
       cy.elements().remove();
-      cy.add(toElements(payload, isDark));
+      const sourceEdges = effectivePayload.edges ?? [];
+      const sourceNodes = effectivePayload.nodes ?? [];
+      const filtered: GraphPayload = {
+        ...effectivePayload,
+        edges: sourceEdges.filter((edge) => {
+          if (hideTypeOnly && edge.typeOnly) return false;
+          return true;
+        }),
+        nodes: collapseBarrels
+          ? sourceNodes.filter((node) => !/(?:^|\/)index\.[cm]?[jt]sx?$/.test(node.path ?? ''))
+          : sourceNodes,
+      };
+      if (collapseBarrels) {
+        const visible = new Set(filtered.nodes.map((node) => node.id));
+        filtered.edges = filtered.edges.filter(
+          (edge) => visible.has(edge.source) && visible.has(edge.target),
+        );
+      }
+      // Grouping is computed from what is actually on screen, so filtering to one folder
+      // regroups that folder's files rather than showing a slice of a partition it is no
+      // longer part of.
+      const detected = detectCommunities(
+        filtered.nodes.map((node) => node.id),
+        filtered.edges,
+      );
+      setCommunities(detected.communities);
+      cy.add(toElements(filtered, isDark, detected.communityById, nodeClasses, edgeClasses));
     });
-    cy.layout(layoutOptions(layout, payload.nodes.length)).run();
+    cy.layout(layoutOptions(layout, (effectivePayload.nodes ?? []).length)).run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload, layout]);
+  }, [effectivePayload, layout, hideTypeOnly, collapseBarrels, reviewGraphOverlay, isDark]);
+
+  // Rings the gathered nodes. Kept apart from the selection highlight below so that adding
+  // to the set does not recompute a neighbourhood on every ctrl-click.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const wanted = new Set(multiSelectedNodeIds);
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const marked = wanted.has(node.id());
+        if (marked === node.hasClass('multi')) return;
+        if (marked) node.addClass('multi');
+        else node.removeClass('multi');
+      });
+    });
+  }, [multiSelectedNodeIds, effectivePayload]);
 
   // Highlighting is a pure class swap: no refetch, no relayout, viewport untouched.
   useEffect(() => {
@@ -401,7 +688,56 @@ export function GraphView(): JSX.Element {
       incoming.addClass('incoming');
       outgoing.addClass('outgoing');
     });
-  }, [selectedNodeId, payload]);
+  }, [selectedNodeId, effectivePayload]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.nodes().removeClass('blast');
+    cy.edges().removeClass('blast');
+    for (const id of highlightNodeIds) {
+      cy.getElementById(id).addClass('blast');
+    }
+    cy.edges().forEach((edge) => {
+      if (
+        highlightNodeIds.includes(edge.source().id()) &&
+        highlightNodeIds.includes(edge.target().id())
+      ) {
+        edge.addClass('blast');
+      }
+    });
+  }, [highlightNodeIds, effectivePayload]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const update = (): void => {
+      const bb = cy.elements().boundingBox();
+      if (bb.w <= 0 || bb.h <= 0) {
+        setMinimap(null);
+        return;
+      }
+      const extent = cy.extent();
+      setMinimap({
+        nodes: cy.nodes().map((node) => ({
+          x: (node.position('x') - bb.x1) / bb.w,
+          y: (node.position('y') - bb.y1) / bb.h,
+          color: String(node.data('color') ?? '#888'),
+        })),
+        view: {
+          x: (extent.x1 - bb.x1) / bb.w,
+          y: (extent.y1 - bb.y1) / bb.h,
+          w: (extent.x2 - extent.x1) / bb.w,
+          h: (extent.y2 - extent.y1) / bb.h,
+        },
+      });
+    };
+    update();
+    cy.on('pan zoom layoutstop', update);
+    return () => {
+      cy.off('pan zoom layoutstop', update);
+    };
+  }, [effectivePayload, layout]);
 
   // Dim non-matching nodes as you type rather than yanking the viewport around.
   useEffect(() => {
@@ -421,7 +757,7 @@ export function GraphView(): JSX.Element {
         .filter((edge) => !matches.contains(edge.source()) || !matches.contains(edge.target()))
         .addClass('hidden');
     });
-  }, [search, payload]);
+  }, [search, effectivePayload]);
 
   // Zooms about the middle of the viewport. Animating with a `center` option fought the zoom
   // and barely moved the view, so this applies the level directly.
@@ -448,6 +784,27 @@ export function GraphView(): JSX.Element {
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+        <div className="flex overflow-hidden rounded border border-edge">
+          {([
+            ['2d', 'Graph'],
+            ['360', '360'],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              disabled={isOverlayActive}
+              onClick={() => setMode(id)}
+              className={clsx(
+                'px-2 py-1 text-[11px]',
+                isOverlayActive ? 'opacity-50' : '',
+                effectiveMode === id ? 'bg-brand text-surface-0' : 'bg-surface-2 text-ink-muted',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <div className="relative">
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
           <input
@@ -475,6 +832,7 @@ export function GraphView(): JSX.Element {
         <select
           value={folderPrefix}
           onChange={(event) => setFolderPrefix(event.target.value)}
+          disabled={isOverlayActive}
           className="max-w-36 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[11px] text-ink focus:border-brand focus:outline-none"
         >
           <option value="">All folders</option>
@@ -498,6 +856,7 @@ export function GraphView(): JSX.Element {
                   return next.size === 0 ? new Set([filter.id]) : next;
                 })
               }
+              disabled={isOverlayActive}
               className={clsx(
                 'rounded px-1.5 py-0.5 text-[10px] transition-colors',
                 edgeTypes.has(filter.id)
@@ -515,16 +874,96 @@ export function GraphView(): JSX.Element {
             type="checkbox"
             checked={includeUnresolved}
             onChange={(event) => setIncludeUnresolved(event.target.checked)}
+            disabled={isOverlayActive}
             className="accent-brand"
           />
           Unresolved
         </label>
+        <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+          <input
+            type="checkbox"
+            checked={hideTypeOnly}
+            onChange={(event) => setHideTypeOnly(event.target.checked)}
+            disabled={isOverlayActive}
+            className="accent-brand"
+          />
+          Hide type-only
+        </label>
+        <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+          <input
+            type="checkbox"
+            checked={collapseBarrels}
+            onChange={(event) => setCollapseBarrels(event.target.checked)}
+            disabled={isOverlayActive}
+            className="accent-brand"
+          />
+          Collapse barrels
+        </label>
+        {graphSliceEdgeTypes && (
+          <Button size="sm" variant="primary" onClick={() => setGraphSliceEdgeTypes(null)} disabled={isOverlayActive}>
+            Clear call slice
+          </Button>
+        )}
+        <input
+          value={viewName}
+          onChange={(event) => setViewName(event.target.value)}
+          placeholder="View name"
+          className="w-24 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[10px] text-ink placeholder:text-ink-faint focus:border-brand focus:outline-none"
+          style={{ userSelect: 'text' }}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={viewName.trim().length === 0 || isOverlayActive}
+          onClick={() => {
+            const next: SavedGraphView[] = [
+              {
+                name: viewName.trim(),
+                folderPrefix,
+                edgeTypes: [...edgeTypes],
+                hideTypeOnly,
+                collapseBarrels,
+                layout,
+              },
+              ...savedViews.filter((view) => view.name !== viewName.trim()),
+            ].slice(0, 12);
+            setSavedViews(next);
+            localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+            setViewName('');
+          }}
+        >
+          Save view
+        </Button>
+        {savedViews.length > 0 && (
+          <select
+            className="max-w-32 rounded border border-edge bg-surface-2 px-1.5 py-1 text-[11px] text-ink"
+            defaultValue=""
+            disabled={isOverlayActive}
+            onChange={(event) => {
+              const view = savedViews.find((entry) => entry.name === event.target.value);
+              event.currentTarget.selectedIndex = 0;
+              if (!view) return;
+              setFolderPrefix(view.folderPrefix);
+              setEdgeTypes(new Set(view.edgeTypes));
+              setHideTypeOnly(view.hideTypeOnly);
+              setCollapseBarrels(view.collapseBarrels);
+              setLayout(view.layout);
+            }}
+          >
+            <option value="">Saved views</option>
+            {savedViews.map((view) => (
+              <option key={view.name} value={view.name}>
+                {view.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         <Button
           size="sm"
           variant={focusMode ? 'primary' : 'ghost'}
           onClick={() => setFocusMode((value) => !value)}
-          disabled={!selectedNodeId}
+          disabled={!selectedNodeId || isOverlayActive}
           title="Show only the neighbourhood of the selected node"
         >
           <Crosshair size={11} />
@@ -534,7 +973,7 @@ export function GraphView(): JSX.Element {
         <Button
           size="sm"
           variant="ghost"
-          disabled={!selectedPath}
+          disabled={!selectedPath || isOverlayActive}
           onClick={() => selectedPath && openCode(selectedPath)}
           title="Open this file's source beside the graph"
         >
@@ -554,36 +993,128 @@ export function GraphView(): JSX.Element {
             <Maximize2 size={11} />
             Fit
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => void load()} title="Reload">
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Export the current graph as PNG"
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              const png = cy.png({ output: 'base64', full: true, bg: '#00000000' });
+              void invoke('system:save-export', {
+                defaultFileName: 'tracedeck-graph.png',
+                contents: png,
+                encoding: 'base64',
+              });
+            }}
+          >
+            <Download size={11} />
+            PNG
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Export the current graph as SVG"
+            onClick={() => {
+              const cy = cyRef.current;
+              if (!cy) return;
+              void invoke('system:save-export', {
+                defaultFileName: 'tracedeck-graph.svg',
+                contents: graphToSvg(cy),
+                encoding: 'utf8',
+              });
+            }}
+          >
+            <Download size={11} />
+            SVG
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void load()} title="Reload" disabled={isOverlayActive}>
             <RefreshCcw size={11} />
           </Button>
         </div>
       </div>
 
-      {payload?.truncated && (
+      {reviewGraphOverlay && (
+        <div className="flex items-center justify-between gap-3 border-b border-edge bg-surface-1 px-3 py-2">
+          <p className="text-[11px] text-ink-muted">
+            <span className="font-medium text-ink">Review evidence</span>
+            {' · '}
+            {reviewGraphOverlay.title}
+          </p>
+          <Button size="sm" variant="ghost" onClick={clearReviewContext}>
+            Clear
+          </Button>
+        </div>
+      )}
+
+      {effectivePayload?.truncated && (
         <div className="px-3 pt-2">
           <Warning>
-            Showing the {payload.nodes.length} most connected of {payload.totalNodeCount} files.
+            Showing the {(effectivePayload.nodes ?? []).length} most connected of {effectivePayload.totalNodeCount} files.
             Narrow by folder, or select a node and turn on Focus, to see a complete subgraph.
           </Warning>
         </div>
       )}
 
       <div className="relative min-h-0 flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
+        {/* Cytoscape stays mounted while the 360 view is open. Its instance is bound to this
+            element, so unmounting would tear down and rebuild the graph on every toggle. */}
+        <div ref={containerRef} className={clsx('absolute inset-0', effectiveMode === '360' && 'invisible')} />
 
-        <div className="pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2">
+        {effectiveMode === '360' && effectivePayload ? (
+          <div className="absolute inset-0">
+            <SpaceCanvas payload={effectivePayload} />
+          </div>
+        ) : null}
+
+        <div
+          className={clsx(
+            'pointer-events-none absolute bottom-3 right-3 h-24 w-36 overflow-hidden rounded-md border border-edge bg-surface-1/95',
+            effectiveMode === '360' && 'hidden',
+          )}
+        >
+          {minimap && (
+            <svg viewBox="0 0 1 1" className="h-full w-full" preserveAspectRatio="none">
+              {minimap.nodes.map((node, index) => (
+                <circle
+                  key={index}
+                  cx={node.x}
+                  cy={node.y}
+                  r="0.012"
+                  fill={node.color}
+                />
+              ))}
+              <rect
+                x={minimap.view.x}
+                y={minimap.view.y}
+                width={Math.max(0.04, minimap.view.w)}
+                height={Math.max(0.04, minimap.view.h)}
+                fill="rgb(var(--brand) / 0.15)"
+                stroke="rgb(var(--brand))"
+                strokeWidth="0.01"
+              />
+            </svg>
+          )}
+        </div>
+
+        <div
+          className={clsx(
+            'pointer-events-none absolute bottom-3 left-3 max-w-[15rem] space-y-1 rounded-md border border-edge bg-surface-1/95 px-2.5 py-2',
+            effectiveMode === '360' && 'hidden',
+          )}
+        >
           <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-            Regions
+            Communities
           </p>
           <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-            {folders.slice(0, 8).map((folder) => (
-              <span key={folder} className="flex items-center gap-1">
+            {communities.slice(0, 8).map((community) => (
+              <span key={community.id} className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: folderColor(folder, isDark) }}
+                  style={{ background: communityColor(community.id, isDark) }}
                 />
-                <span className="mono-path text-ink-muted">{folder}</span>
+                <span className="mono-path text-ink-muted">{community.label}</span>
+                <span className="text-[10px] text-ink-faint">{community.nodes.length}</span>
               </span>
             ))}
           </div>
@@ -601,7 +1132,15 @@ export function GraphView(): JSX.Element {
               </div>
             ))}
             <p className="pt-0.5 text-[10px] text-ink-faint">
-              Size shows how connected a file is. Double-click opens its code.
+              Colour groups files that depend on each other more than on the rest of the
+              project, named after the folder most of them share. Size shows how connected a
+              file is. Double-click opens its code.
+            </p>
+            <p className="text-[10px] text-ink-faint">
+              <span className="text-ink-muted">Ctrl-click</span> gathers ·{' '}
+              <span className="text-ink-muted">Shift-drag</span> sweeps a box ·{' '}
+              <span className="text-ink-muted">add Ctrl</span> to open what you gathered
+              {multiSelectedNodeIds.length > 0 ? ` · ${multiSelectedNodeIds.length} gathered` : ''}
             </p>
           </div>
         </div>

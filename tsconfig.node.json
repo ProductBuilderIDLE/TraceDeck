@@ -17,19 +17,19 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@main/*": ["src/main/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@main/*": ["./src/main/*"]
     }
   },
   "include": [
     "src/main/**/*.ts",
+    "src/cli/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "tests/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ],
-  "exclude": ["tests/fixtures/**"]
+  "exclude": ["tests/fixtures/**", "tests/unit/renderer/**", "tests/e2e/**"]
 }

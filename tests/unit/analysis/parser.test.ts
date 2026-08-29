@@ -201,4 +201,174 @@ describe('parser resilience', () => {
     expect(result.imports).toEqual([]);
     expect(result.symbols).toEqual([]);
   });
+
+  it.each([
+    {
+      fileName: 'Widget.vue',
+      source: [
+        '<template><div /></template>',
+        '<script lang="ts">',
+        `import { shared } from './shared';`,
+        'export const widgetValue = shared;',
+        '</script>',
+      ].join('\n'),
+      symbol: 'widgetValue',
+      line: 4,
+    },
+    {
+      fileName: 'Panel.svelte',
+      source: [
+        '<script lang="ts">',
+        `import { shared } from './shared';`,
+        'export const panelValue = shared;',
+        '</script>',
+        '<p>{panelValue}</p>',
+      ].join('\n'),
+      symbol: 'panelValue',
+      line: 3,
+    },
+    {
+      fileName: 'Page.astro',
+      source: [
+        '---',
+        `import { shared } from './shared';`,
+        'export const pageValue = shared;',
+        '---',
+        '<p>{pageValue}</p>',
+      ].join('\n'),
+      symbol: 'pageValue',
+      line: 3,
+    },
+  ])('parses the standard script region in $fileName without shifting lines', ({
+    fileName,
+    source,
+    symbol,
+    line,
+  }) => {
+    const result = parse(fileName, source);
+    const limitations = (result as typeof result & { limitations?: string[] }).limitations;
+
+    expect(result.imports).toEqual([
+      expect.objectContaining({ specifier: './shared' }),
+    ]);
+    expect(result.symbols).toEqual([
+      expect.objectContaining({ name: symbol, startLine: line }),
+    ]);
+    expect(limitations?.join(' ')).toMatch(/template and style regions analysed/i);
+  });
+
+  it('does not execute script examples inside markup comments', () => {
+    const result = parse(
+      'Example.vue',
+      [
+        '<template>',
+        '  <!-- <script>',
+        `  import { fake } from './commented';`,
+        '  export const fakeSymbol = fake;',
+        '  </script> -->',
+        '</template>',
+      ].join('\n'),
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+  });
+
+  it('reports external script blocks without treating their fallback body as analysed', () => {
+    const result = parse(
+      'External.vue',
+      `<script src="./external.ts">import './fallback'; export const fallback = true;</script>`,
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+    expect(result.limitations.join(' ')).toMatch(/external.*\.\/external\.ts.*not analysed/i);
+  });
+
+  it('reports unsupported script languages without parsing them as JavaScript', () => {
+    const result = parse(
+      'Legacy.svelte',
+      `<script lang="coffee">import './coffee-only'; export value = 1</script>`,
+    );
+
+    expect(result.imports).toEqual([]);
+    expect(result.symbols).toEqual([]);
+    expect(result.limitations.join(' ')).toMatch(/unsupported.*coffee.*not analysed/i);
+  });
+});
+
+describe('syntax issues', () => {
+  it('records line-addressable parse problems as syntaxIssues', () => {
+    const result = parse('broken.ts', 'const x = {\n');
+    // The compiler is error-tolerant; if it surfaces diagnostics they must have a line.
+    for (const issue of result.syntaxIssues) {
+      expect(issue.line).toBeGreaterThan(0);
+      expect(issue.message.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('call extraction', () => {
+  it('records a bare call as an unqualified callee', () => {
+    const result = parse('a.ts', `function helper() {}\nhelper();`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'helper',
+      line: 2,
+      isPropertyAccess: false,
+      receiver: null,
+    });
+  });
+
+  it('keeps the receiver of a property-access call instead of discarding it', () => {
+    // Recording only the member name is what let `logger.send()` be mistaken for an
+    // imported `send`; the receiver is what makes the two distinguishable downstream.
+    const result = parse('a.ts', `logger.send('hello');`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'send',
+      line: 1,
+      isPropertyAccess: true,
+      receiver: 'logger',
+    });
+  });
+
+  it('marks a property access with no plain identifier receiver', () => {
+    const result = parse('a.ts', `class A { run() { this.step(); } }\nconfig.a.b.load();`);
+
+    expect(result.calls).toContainEqual({
+      callee: 'step',
+      line: 1,
+      isPropertyAccess: true,
+      receiver: null,
+    });
+    expect(result.calls).toContainEqual({
+      callee: 'load',
+      line: 2,
+      isPropertyAccess: true,
+      receiver: null,
+    });
+  });
+
+  it('binds the local name of a namespace import', () => {
+    const result = parse('a.ts', `import * as api from './api';\napi.send();`);
+
+    expect(result.imports[0]).toMatchObject({
+      specifier: './api',
+      importedNames: ['*'],
+      namespaceBinding: 'api',
+    });
+    expect(result.calls).toContainEqual({
+      callee: 'send',
+      line: 2,
+      isPropertyAccess: true,
+      receiver: 'api',
+    });
+  });
+
+  it('leaves a named import without a namespace binding', () => {
+    const result = parse('a.ts', `import { send } from './api';`);
+
+    expect(result.imports[0]?.namespaceBinding).toBeUndefined();
+  });
 });

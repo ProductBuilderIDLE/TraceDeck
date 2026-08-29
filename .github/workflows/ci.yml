@@ -52,8 +52,19 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Linux can create symlinks, so every guard must actually execute here. Asserting zero
+      # skips gives the skip count a visible floor: if someone adds a new it.skipIf, or a
+      # capability probe silently starts returning false, CI fails instead of quietly
+      # shrinking coverage behind a technically-honest "N skipped" label.
       - name: Test
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/vitest.log
+          if grep -qE "[0-9]+ skipped" /tmp/vitest.log; then
+            echo "::error::Tests were skipped on Linux, where every guard must run:"
+            grep -E "[0-9]+ skipped" /tmp/vitest.log
+            exit 1
+          fi
 
       # Not `npm run build`, which would repeat the type-check step above.
       - name: Build

@@ -35,6 +35,26 @@ export interface FileRow {
   scan_id: number;
 }
 
+export interface ProjectFileRow {
+  id: number;
+  project_id: number;
+  relative_path: string;
+  absolute_path: string;
+  scan_id: number;
+  entry_kind: string;
+  extension: string;
+  size_bytes: number;
+  modified_at: string;
+  content_kind: string;
+  encoding: string | null;
+  content_hash: string | null;
+  is_git_ignored: number;
+  gitignore_rule: string | null;
+  is_user_excluded: number;
+  analysis_status: string;
+  analysis_reason: string;
+}
+
 export interface SymbolRow {
   id: number;
   project_id: number;
@@ -98,6 +118,23 @@ export interface ReportRow {
   report_type: string;
   configuration_json: string;
   created_at: string;
+}
+
+export interface ChangeReviewRow {
+  id: number;
+  project_id: number;
+  base_commit: string;
+  base_tree_id: string | null;
+  working_tree_fingerprint: string;
+  user_configuration_fingerprint: string;
+  effective_baseline_fingerprint: string;
+  working_tree_scan_id: number;
+  tracedeck_version: string;
+  result_schema_version: number;
+  traversal_depth: number;
+  completed_at: string;
+  summary_json: string;
+  retained_result_json: string;
 }
 
 /**

@@ -1,12 +1,48 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, type FSWatcher, type WatchEventType } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataStore } from '@main/db';
 import { openDatabase } from '@main/db/connection';
 import { runScan } from '@main/analysis/scanner';
+import { scanHandlers, startWatchingForProject } from '@main/ipc/scanHandlers';
+import { AnalysisService } from '@main/services/analysisService';
+import { ProjectOperationRegistry } from '@main/services/projectOperations';
+import {
+  stopAllWatchers,
+  watchProject,
+  type WatchFactory,
+} from '@main/services/watchService';
 import type { CycleDetails, Project, UnusedExportDetails } from '@shared/types';
 
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [] },
+}));
+
 const FIXTURE_ROOT = resolve(__dirname, '../fixtures/sample-project');
+
+function fixture(name: string): string {
+  return resolve(__dirname, `../fixtures/${name}`);
+}
+
+function fakeWatcher(): {
+  watch: WatchFactory;
+  emit(filename: string | null): void;
+  close: ReturnType<typeof vi.fn>;
+} {
+  let listener: ((eventType: WatchEventType, filename: string | null) => void) | null = null;
+  const close = vi.fn();
+  const watcher = { close } as unknown as FSWatcher;
+  const watch: WatchFactory = (_rootPath, _options, nextListener) => {
+    listener = nextListener;
+    return watcher;
+  };
+
+  return {
+    watch,
+    emit: (filename) => listener?.('change', filename),
+    close,
+  };
+}
 
 let store: DataStore;
 let project: Project;
@@ -17,6 +53,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopAllWatchers();
+  vi.useRealTimers();
   store.close();
 });
 
@@ -125,6 +163,160 @@ describe('end-to-end scan', () => {
 
     expect(second).toEqual(first);
   });
+
+  it('stores the complete mixed-asset inventory separately from graph-eligible files', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+
+    const result = await scan();
+    const stats = new AnalysisService(store).dashboardStats(project);
+    const limitations = result.summary?.limitations.join(' ') ?? '';
+
+    expect(store.projectFiles.listByProject(project.id).map((file) => file.relativePath)).toEqual([
+      '.gitignore',
+      'README.md',
+      'app.js',
+      'index.html',
+      'package.json',
+      'style.css',
+    ]);
+    // app.js, index.html and style.css are all graph sources now.
+    expect(store.files.countByProject(project.id)).toBe(3);
+    expect(result.summary?.totalFiles).toBe(3);
+    expect(result.summary).toMatchObject({
+      inventoryFiles: 6,
+      graphEligibleFiles: 3,
+      textOnlyFiles: 3,
+      binaryFiles: 0,
+      ignoredFiles: 0,
+      unavailableFiles: 0,
+    });
+    expect(stats).toMatchObject({
+      totalFiles: 6,
+      graphEligibleFiles: 3,
+      textOnlyFiles: 3,
+      binaryFiles: 0,
+      ignoredFiles: 0,
+      unavailableFiles: 0,
+    });
+    expect(limitations).toMatch(/included 3 source files/i);
+    expect(limitations).not.toMatch(/\.html/);
+    expect(limitations).not.toMatch(/\.css/);
+
+    const edges = store.edges.listByProject(project.id);
+    expect(
+      edges.some(
+        (edge) => edge.fromNodeId === 'file:index.html' && edge.toNodeId === 'file:style.css',
+      ),
+    ).toBe(true);
+    expect(
+      edges.some(
+        (edge) => edge.fromNodeId === 'file:index.html' && edge.toNodeId === 'file:app.js',
+      ),
+    ).toBe(true);
+  });
+
+  it('reports retained ignored files as unavailable for analysis', async () => {
+    project = store.projects.createOrTouch(
+      'ignore-precedence-project',
+      fixture('ignore-precedence-project'),
+    );
+
+    const result = await scan();
+    const stats = new AnalysisService(store).dashboardStats(project);
+
+    expect(result.summary).toMatchObject({ ignoredFiles: 1, unavailableFiles: 1 });
+    expect(stats).toMatchObject({ ignoredFiles: 1, unavailableFiles: 1 });
+  });
+
+  it('explains a zero-file scan with the inspected folder and omitted extensions', async () => {
+    // Uses a fixture with no parseable source at all. asset-only-project no longer qualifies
+    // now that HTML and CSS are parsed by tree-sitter, so repointing the test keeps the
+    // zero-source path covered rather than dropping the coverage.
+    project = store.projects.createOrTouch('no-source-project', fixture('no-source-project'));
+
+    const result = await scan();
+    const limitations = result.summary?.limitations.join(' ') ?? '';
+
+    expect(result.summary?.totalFiles).toBe(0);
+    expect(limitations).toMatch(/no .*source files/i);
+    expect(limitations).toMatch(/no-source-project/i);
+    expect(limitations).toMatch(/\.md/);
+    expect(limitations).toMatch(/\.txt/);
+    expect(limitations).toMatch(/JavaScript.*TypeScript.*Vue.*Svelte.*Astro.*HTML.*CSS.*Python.*Go.*Rust/i);
+  });
+
+  it('builds graph edges from tree-sitter languages the TypeScript compiler cannot parse', async () => {
+    project = store.projects.createOrTouch(
+      'mixed-language-project',
+      fixture('mixed-language-project'),
+    );
+
+    const result = await scan();
+    const edges = store.edges.listByProject(project.id);
+    const hasEdge = (from: string, to: string) =>
+      edges.some((edge) => edge.fromNodeId === `file:${from}` && edge.toNodeId === `file:${to}`);
+
+    expect(result.summary?.totalFiles).toBe(6);
+    expect(hasEdge('app.py', 'helper.py')).toBe(true);
+    expect(hasEdge('main.go', 'local/local.go')).toBe(true);
+    expect(hasEdge('src/lib.rs', 'src/foo.rs')).toBe(true);
+  });
+
+  it('discovers and resolves imports from Vue, Svelte, and Astro script regions', async () => {
+    project = store.projects.createOrTouch(
+      'source-containers-project',
+      fixture('source-containers-project'),
+    );
+
+    const result = await scan();
+    const edges = store.edges.listByProject(project.id);
+
+    expect(result.summary?.totalFiles).toBe(4);
+    for (const source of ['src/Widget.vue', 'src/Panel.svelte', 'src/Page.astro']) {
+      expect(
+        edges.some(
+          (edge) =>
+            edge.fromNodeId === `file:${source}` && edge.toNodeId === 'file:src/shared.ts',
+        ),
+        source,
+      ).toBe(true);
+    }
+    expect(result.summary?.limitations.join(' ')).toMatch(/script.*only|template.*not.*analysed/i);
+  });
+
+  it('resolves aliases from the nearest child tsconfig in a monorepo', async () => {
+    project = store.projects.createOrTouch('monorepo-project', fixture('monorepo-project'));
+
+    const result = await scan();
+    const unresolved = store.findings
+      .list(project.id, { findingType: 'unresolved-import' })
+      .map((finding) => finding.title);
+
+    expect(result.summary?.totalFiles).toBe(3);
+    expect(unresolved.join(' ')).not.toContain('@web/lib/value');
+    expect(
+      store.edges
+        .listFrom(project.id, 'file:apps/web/src/index.ts')
+        .some((edge) => edge.toNodeId === 'file:apps/web/src/lib/value.ts'),
+    ).toBe(true);
+  });
+
+  it('keeps source-container limitations identical on an incremental scan', async () => {
+    project = store.projects.createOrTouch(
+      'source-containers-project',
+      fixture('source-containers-project'),
+    );
+
+    const first = await scan();
+    const second = await scan();
+    const firstLimitations = first.summary?.limitations.join(' ') ?? '';
+
+    expect(firstLimitations).toMatch(/\.vue source container/);
+    expect(firstLimitations).toMatch(/external script block.*\.\/external-widget\.ts.*not analysed/i);
+    expect(firstLimitations).toMatch(/unsupported language.*coffee.*not analysed/i);
+    expect(second.summary?.parsedFiles).toBe(0);
+    expect(second.summary?.limitations).toEqual(first.summary?.limitations);
+  });
 });
 
 describe('incremental rescan', () => {
@@ -200,6 +392,99 @@ describe('incremental rescan', () => {
 
     expect(scanCount?.count).toBe(1);
   });
+
+  it('removes missing inventory while reusing graph files and retaining current rows after pruning', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const temporaryAsset = join(project.rootPath, 'temporary-notes.txt');
+    await fs.writeFile(temporaryAsset, 'temporary inventory entry\n');
+
+    try {
+      const first = await scan();
+      const graphFileId = store.files.findByPath(project.id, 'app.js')?.id;
+      expect(store.projectFiles.findByPath(project.id, 'temporary-notes.txt')).not.toBeNull();
+
+      await fs.rm(temporaryAsset, { force: true });
+      const second = await scan();
+
+      expect(second.summary?.parsedFiles).toBe(0);
+      expect(second.summary?.skippedUnchangedFiles).toBe(3);
+      expect(store.files.findByPath(project.id, 'app.js')?.id).toBe(graphFileId);
+      expect(store.projectFiles.findByPath(project.id, 'temporary-notes.txt')).toBeNull();
+      expect(store.projectFiles.listByProject(project.id)).toHaveLength(6);
+      expect(
+        store.projectFiles.listByProject(project.id).every((file) => file.scanId === second.id),
+      ).toBe(true);
+      expect(store.scans.findById(first.id)).toBeNull();
+    } finally {
+      await fs.rm(temporaryAsset, { force: true });
+    }
+  });
+
+  it('keeps completed inventory authoritative when a later scan is cancelled', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const completed = await scan();
+    const completedInventory = store.projectFiles
+      .listByProject(project.id)
+      .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId }));
+    const cancelledOnlyAsset = join(project.rootPath, 'cancelled-only.txt');
+    await fs.writeFile(cancelledOnlyAsset, 'must not become authoritative\n');
+    const signal = { cancelled: false };
+
+    try {
+      await expect(
+        runScan(store, {
+          project: store.projects.findById(project.id) as Project,
+          fullRescan: false,
+          signal,
+          onProgress: (progress) => {
+            if (progress.phase === 'parsing') signal.cancelled = true;
+          },
+        }),
+      ).rejects.toThrow(/cancelled/i);
+
+      expect(store.scans.latestCompletedForProject(project.id)?.id).toBe(completed.id);
+      expect(
+        store.projectFiles
+          .listByProject(project.id)
+          .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId })),
+      ).toEqual(completedInventory);
+      expect(store.projectFiles.findByPath(project.id, 'cancelled-only.txt')).toBeNull();
+    } finally {
+      await fs.rm(cancelledOnlyAsset, { force: true });
+    }
+  });
+
+  it('rolls back inventory when final scan publication throws', async () => {
+    project = store.projects.createOrTouch('asset-heavy-project', fixture('asset-heavy-project'));
+    const completed = await scan();
+    const completedInventory = store.projectFiles
+      .listByProject(project.id)
+      .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId }));
+    const failedOnlyAsset = join(project.rootPath, 'failed-only.txt');
+    await fs.writeFile(failedOnlyAsset, 'must roll back with final publication\n');
+
+    try {
+      await expect(
+        runScan(store, {
+          project: store.projects.findById(project.id) as Project,
+          fullRescan: false,
+          onProgress: (progress) => {
+            if (progress.phase === 'done') throw new Error('progress publication failed');
+          },
+        }),
+      ).rejects.toThrow(/progress publication failed/i);
+
+      expect(store.scans.latestCompletedForProject(project.id)?.id).toBe(completed.id);
+      expect(
+        store.projectFiles
+          .listByProject(project.id)
+          .map((file) => ({ relativePath: file.relativePath, scanId: file.scanId })),
+      ).toEqual(completedInventory);
+      expect(store.projectFiles.findByPath(project.id, 'failed-only.txt')).toBeNull();
+    } finally {
+      await fs.rm(failedOnlyAsset, { force: true });
+    }
+  });
 });
 
 describe('scan cancellation', () => {
@@ -215,5 +500,119 @@ describe('scan cancellation', () => {
     ).rejects.toThrow(/cancelled/i);
 
     expect(store.scans.latestForProject(project.id)?.status).toBe('cancelled');
+  });
+});
+
+describe('scan operation coordination', () => {
+  it('publishes a scan lease while running and rejects a second scan', async () => {
+    const operations = new ProjectOperationRegistry();
+    const handlers = scanHandlers(store, operations);
+    const start = handlers['scan:start']!;
+
+    const first = start({ projectId: project.id, fullRescan: false });
+    expect(operations.active(project.id)).toMatchObject({ projectId: project.id, kind: 'scan' });
+
+    await expect(start({ projectId: project.id, fullRescan: false })).rejects.toMatchObject({
+      code: 'SCAN_IN_PROGRESS',
+    });
+    await expect(first).resolves.toEqual({ scanId: expect.any(Number) });
+    expect(operations.active(project.id)).toBeNull();
+  });
+
+  it('rejects a user scan while a review owns the project', async () => {
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const start = scanHandlers(store, operations)['scan:start']!;
+
+    await expect(start({ projectId: project.id, fullRescan: false })).rejects.toMatchObject({
+      code: 'REVIEW_IN_PROGRESS',
+    });
+    expect(operations.active(project.id)?.operationId).toBe(review?.operationId);
+  });
+
+  it('does not let scan cancellation cancel a review lease', async () => {
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const cancel = scanHandlers(store, operations)['scan:cancel']!;
+
+    await expect(cancel({ projectId: project.id })).resolves.toEqual({ cancelled: false });
+    expect(review?.scanSignal.cancelled).toBe(false);
+    expect(review?.abortController.signal.aborted).toBe(false);
+  });
+
+  it('cancels the active scan lease and persists cancelled status', async () => {
+    const operations = new ProjectOperationRegistry();
+    const handlers = scanHandlers(store, operations);
+    const start = handlers['scan:start']!;
+    const cancel = handlers['scan:cancel']!;
+
+    const request = start({ projectId: project.id, fullRescan: false });
+    const active = operations.active(project.id);
+    expect(active?.kind).toBe('scan');
+    await expect(cancel({ projectId: project.id })).resolves.toEqual({ cancelled: true });
+    await expect(request).rejects.toMatchObject({ code: 'SCAN_CANCELLED' });
+
+    expect(store.scans.latestForProject(project.id)?.status).toBe('cancelled');
+    expect(operations.active(project.id)).toBeNull();
+  });
+});
+
+describe('project watcher', () => {
+  it('normalizes the changed path and waits for an 800 ms quiet period', async () => {
+    vi.useFakeTimers();
+    const fake = fakeWatcher();
+    const onChange = vi.fn();
+    watchProject(project.id, project.rootPath, onChange, fake.watch);
+
+    fake.emit('src\\first.ts');
+    await vi.advanceTimersByTimeAsync(400);
+    fake.emit('src\\second.ts');
+    await vi.advanceTimersByTimeAsync(799);
+    expect(onChange).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('src/second.ts');
+  });
+
+  it('suppresses changes inside excluded directories', async () => {
+    vi.useFakeTimers();
+    const fake = fakeWatcher();
+    const onChange = vi.fn();
+    watchProject(project.id, project.rootPath, onChange, fake.watch);
+
+    fake.emit('node_modules\\dependency\\index.ts');
+    fake.emit('.git\\config');
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('marks a review dirty and starts exactly one deferred scan after release', async () => {
+    vi.useFakeTimers();
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const acquire = vi.spyOn(operations, 'acquire');
+    const fake = fakeWatcher();
+    startWatchingForProject(store, project.id, operations, fake.watch);
+
+    fake.emit('src\\first.ts');
+    await vi.advanceTimersByTimeAsync(800);
+    fake.emit('src\\latest.ts');
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(review?.workingTreeDirty).toBe(true);
+    expect(acquire).not.toHaveBeenCalled();
+    review?.release();
+    expect(operations.active(project.id)).toBeNull();
+
+    await Promise.resolve();
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledWith(project.id, 'scan');
+    const active = operations.active(project.id);
+    expect(active).toMatchObject({ kind: 'scan' });
+
+    operations.cancel(project.id, active?.operationId);
+    await vi.waitFor(() => expect(operations.active(project.id)).toBeNull());
   });
 });

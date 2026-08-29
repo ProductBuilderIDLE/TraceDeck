@@ -11,10 +11,17 @@ import {
   TypeErrorsView,
   UnresolvedImportsView,
   UnusedExportsView,
+  SyntaxErrorsView,
+  MergeConflictsView,
+  TodosView,
+  DuplicatesView,
+  ComplexityView,
 } from './components/views/Findings';
 import { ArchitectureRulesView } from './components/views/ArchitectureRules';
+import { MetricsView } from './components/views/Metrics';
 import { ReportsView } from './components/views/Reports';
 import { SettingsView } from './components/views/Settings';
+import { ChangeReview } from './components/views/ChangeReview';
 import { useUiStore, type ViewId } from './store/uiStore';
 import { useAppStore } from './store/appStore';
 import { invoke, subscribeToScanProgress } from './lib/ipc';
@@ -24,11 +31,18 @@ const VIEWS: Record<ViewId, () => JSX.Element> = {
   dashboard: Dashboard,
   graph: GraphView,
   explorer: Explorer,
+  'change-review': ChangeReview,
   cycles: CyclesView,
   'unused-exports': UnusedExportsView,
   architecture: ArchitectureRulesView,
   unresolved: UnresolvedImportsView,
   'type-errors': TypeErrorsView,
+  'syntax-errors': SyntaxErrorsView,
+  'merge-conflicts': MergeConflictsView,
+  todos: TodosView,
+  duplicates: DuplicatesView,
+  complexity: ComplexityView,
+  metrics: MetricsView,
   reports: ReportsView,
   settings: SettingsView,
 };
@@ -67,6 +81,7 @@ export function App(): JSX.Element {
     invoke('system:set-theme', { theme }).catch(() => undefined);
   }, [theme]);
 
+  const lastScan = useAppStore((state) => state.lastScan);
   const View = VIEWS[activeView];
 
   return (
@@ -76,7 +91,7 @@ export function App(): JSX.Element {
         <ErrorBanner />
         <div className="flex min-h-0 flex-1">
           <MainPanel>
-            <ErrorBoundary key={activeView}>
+            <ErrorBoundary key={`${activeView}:${lastScan?.id ?? 'none'}`}>
               <View />
             </ErrorBoundary>
           </MainPanel>

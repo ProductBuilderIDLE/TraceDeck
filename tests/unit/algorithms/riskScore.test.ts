@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { GraphIndex } from '@main/analysis/algorithms/graphIndex';
-import { computeRiskScore, type RiskScoreInputs } from '@main/analysis/algorithms/riskScore';
+import {
+  assignPercentiles,
+  computeRiskScore,
+  type RiskScoreInputs,
+} from '@main/analysis/algorithms/riskScore';
+import type { RiskScore } from '@shared/types';
 import type { AdjacencyEdge } from '@main/db/repositories/edgeRepository';
 
 function edge(from: string, to: string): AdjacencyEdge {
@@ -139,5 +144,57 @@ describe('computeRiskScore', () => {
     const score = computeRiskScore(inputs({ nodeId: 'symbol:src/core.ts#helper' }));
 
     expect(score.path).toBe('src/core.ts#helper');
+  });
+});
+
+describe('assignPercentiles', () => {
+  function scored(...values: number[]): RiskScore[] {
+    return values.map((score, position) => ({
+      ...computeRiskScore(inputs({ nodeId: `file:src/f${position}.ts` })),
+      score,
+    }));
+  }
+
+  function percentileOf(results: RiskScore[], score: number): number {
+    return results.find((entry) => entry.score === score)?.percentile ?? -1;
+  }
+
+  it('gives every file with the same score the same percentile', () => {
+    // The regression this pins: ranking by sorted array position spread tied scores across a
+    // wide band, so files that are identical by every measured input read as different.
+    const results = assignPercentiles(scored(0, 0, 0, 0, 0, 0, 0, 0, 12, 40));
+    const tied = results.filter((entry) => entry.score === 0).map((entry) => entry.percentile);
+
+    expect(new Set(tied).size).toBe(1);
+  });
+
+  it('ranks a higher score above a lower one', () => {
+    const results = assignPercentiles(scored(0, 12, 40));
+
+    expect(percentileOf(results, 40)).toBeGreaterThan(percentileOf(results, 12));
+    expect(percentileOf(results, 12)).toBeGreaterThan(percentileOf(results, 0));
+  });
+
+  it('places the only file in a project mid-scale rather than at an extreme', () => {
+    expect(assignPercentiles(scored(30))[0]?.percentile).toBe(50);
+  });
+
+  it('keeps every percentile within 0 and 100', () => {
+    for (const entry of assignPercentiles(scored(0, 0, 1, 5, 40, 100))) {
+      expect(entry.percentile).toBeGreaterThanOrEqual(0);
+      expect(entry.percentile).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('does not depend on the order the scores arrive in', () => {
+    const forward = assignPercentiles(scored(0, 12, 40, 12));
+    const reversed = assignPercentiles(scored(12, 40, 12, 0));
+
+    expect(percentileOf(forward, 12)).toBe(percentileOf(reversed, 12));
+    expect(percentileOf(forward, 40)).toBe(percentileOf(reversed, 40));
+  });
+
+  it('returns an empty list unchanged', () => {
+    expect(assignPercentiles([])).toEqual([]);
   });
 });

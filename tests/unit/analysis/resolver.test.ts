@@ -5,6 +5,8 @@ import { loadProjectTsConfig, NO_TSCONFIG, expandAlias } from '@main/analysis/ts
 import { toPosixPath } from '@main/utils/glob';
 
 const FIXTURE_ROOT = resolve(__dirname, '../../fixtures/sample-project');
+const CONTAINER_ROOT = resolve(__dirname, '../../fixtures/source-containers-project');
+const MONOREPO_ROOT = resolve(__dirname, '../../fixtures/monorepo-project');
 
 function abs(relativePath: string): string {
   return toPosixPath(resolve(FIXTURE_ROOT, relativePath));
@@ -71,6 +73,31 @@ describe('relative import resolution', () => {
 
     expect(result).toMatchObject({ status: 'unresolved', reason: 'file-not-found' });
   });
+
+  it('resolves extensionless imports to Vue, Svelte, and Astro source containers', () => {
+    const knownFiles = buildKnownFileIndex(
+      ['src/shared.ts', 'src/Widget.vue', 'src/Panel.svelte', 'src/Page.astro'].map((path) =>
+        toPosixPath(resolve(CONTAINER_ROOT, path)),
+      ),
+    );
+    const containerContext: ResolverContext = {
+      rootPath: CONTAINER_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles,
+    };
+    const from = toPosixPath(resolve(CONTAINER_ROOT, 'src/shared.ts'));
+
+    for (const [specifier, fileName] of [
+      ['./Widget', 'Widget.vue'],
+      ['./Panel', 'Panel.svelte'],
+      ['./Page', 'Page.astro'],
+    ] as const) {
+      expect(resolveImport(specifier, from, containerContext), specifier).toMatchObject({
+        status: 'resolved',
+        absolutePath: toPosixPath(resolve(CONTAINER_ROOT, 'src', fileName)),
+      });
+    }
+  });
 });
 
 describe('path alias resolution', () => {
@@ -117,6 +144,24 @@ describe('path alias resolution', () => {
 
     expect(expandAlias('@app/db/client', tsConfig)).toEqual([abs('src/db/client')]);
   });
+
+  it('uses the nearest nested workspace config for the importing file', () => {
+    const importer = toPosixPath(resolve(MONOREPO_ROOT, 'apps/web/src/index.ts'));
+    const target = toPosixPath(resolve(MONOREPO_ROOT, 'apps/web/src/lib/value.ts'));
+    const nestedConfig = loadProjectTsConfig(resolve(MONOREPO_ROOT, 'apps/web'));
+    const workspaceContext = {
+      rootPath: MONOREPO_ROOT,
+      tsConfig: NO_TSCONFIG,
+      tsConfigs: [nestedConfig],
+      knownFiles: buildKnownFileIndex([importer, target]),
+    } as ResolverContext & { tsConfigs: ReturnType<typeof loadProjectTsConfig>[] };
+
+    expect(resolveImport('@web/lib/value', importer, workspaceContext)).toEqual({
+      status: 'resolved',
+      absolutePath: target,
+      viaAlias: true,
+    });
+  });
 });
 
 describe('external and unresolvable specifiers', () => {
@@ -154,5 +199,121 @@ describe('loadProjectTsConfig', () => {
 
     expect(config.configKind).toBe('none');
     expect(config.warnings.join(' ')).toMatch(/Only relative imports can be resolved/);
+  });
+});
+
+/**
+ * A declaration file is a type sidecar, not the module. Resolving to it would drop every
+ * runtime edge the implementation contributes.
+ */
+describe('declaration files never shadow an implementation', () => {
+  it('resolves to the implementation when a .d.ts sits beside it', () => {
+    const context: ResolverContext = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([abs('src/pair/foo.js'), abs('src/pair/foo.d.ts')]),
+    };
+
+    const result = resolveImport('./pair/foo', abs('src/app.ts'), context);
+
+    expect(result.status).toBe('resolved');
+    if (result.status !== 'resolved') throw new Error('expected resolved');
+    expect(result.absolutePath.endsWith('foo.js')).toBe(true);
+  });
+
+  it('still resolves to the declaration when there is no implementation', () => {
+    const context: ResolverContext = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([abs('src/types/only.d.ts')]),
+    };
+
+    const result = resolveImport('./types/only', abs('src/app.ts'), context);
+
+    expect(result.status).toBe('resolved');
+    if (result.status !== 'resolved') throw new Error('expected resolved');
+    expect(result.absolutePath.endsWith('only.d.ts')).toBe(true);
+  });
+});
+
+describe('tree-sitter language resolution', () => {
+  it('resolves a Python relative import to a sibling module', () => {
+    const from = abs('src/app.py');
+    const helper = abs('src/helper.py');
+    const result = resolveImport('./helper', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, helper]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: helper });
+  });
+
+  it('resolves a Python package directory to __init__.py', () => {
+    const from = abs('src/app.py');
+    const init = abs('src/pkg/__init__.py');
+    const result = resolveImport('./pkg', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, init]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: init });
+  });
+
+  it('does not let a JavaScript import land on a Python package', () => {
+    const from = abs('src/app.ts');
+    const init = abs('src/pkg/__init__.py');
+    const result = resolveImport('./pkg', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, init]),
+    });
+
+    expect(result).toMatchObject({ reason: 'file-not-found' });
+  });
+
+  it('resolves a Go directory import to a .go file in that package', () => {
+    const from = abs('src/main.go');
+    const local = abs('src/local/local.go');
+    const result = resolveImport('./local', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, local]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: local });
+  });
+
+  it('resolves a Rust mod to foo.rs, then to foo/mod.rs', () => {
+    const from = abs('src/lib.rs');
+    const fileModule = abs('src/foo.rs');
+    const dirModule = abs('src/bar/mod.rs');
+    const known = {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, fileModule, dirModule]),
+    };
+
+    expect(resolveImport('./foo', from, known)).toMatchObject({
+      status: 'resolved',
+      absolutePath: fileModule,
+    });
+    expect(resolveImport('./bar', from, known)).toMatchObject({
+      status: 'resolved',
+      absolutePath: dirModule,
+    });
+  });
+
+  it('resolves an HTML stylesheet href without a ./ prefix', () => {
+    const from = abs('index.html');
+    const css = abs('style.css');
+    const result = resolveImport('style.css', from, {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([from, css]),
+    });
+
+    expect(result).toMatchObject({ status: 'resolved', absolutePath: css });
   });
 });

@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { BrowserWindow, dialog } from 'electron';
 import type { ExportReportResult } from '@shared/ipc';
-import type { FindingType, ReportFormat, ReportScope, ReportSection } from '@shared/types';
+import { ALL_FINDING_TYPES, type FindingType, type ReportFormat, type ReportScope, type ReportSection } from '@shared/types';
 import type { DataStore } from '../db';
 import type { AnalysisService } from '../services/analysisService';
 import {
@@ -29,14 +29,9 @@ const SECTIONS: readonly ReportSection[] = [
   'top-impact-files',
   'blast-radius',
   'limitations',
+  'changed-since-scan',
 ];
-const FINDING_TYPES: readonly FindingType[] = [
-  'circular-dependency',
-  'unused-export-candidate',
-  'architecture-violation',
-  'unresolved-import',
-  'type-error',
-];
+const FINDING_TYPES: readonly FindingType[] = ALL_FINDING_TYPES;
 
 function parseScope(raw: unknown): ReportScope {
   const value = asObject(raw, 'scope');

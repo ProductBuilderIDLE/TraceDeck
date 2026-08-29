@@ -139,6 +139,16 @@ describe('findUnusedExportCandidates', () => {
     expect(candidates[0]?.caveats.join(' ')).toMatch(/any name/);
   });
 
+  it('attaches a caveat when Git recently renamed the file', () => {
+    const candidates = findUnusedExportCandidates(
+      [symbol()],
+      new GraphIndex([]),
+      options({ renamedPaths: new Set(['src/util.ts']) }),
+    );
+
+    expect(candidates[0]?.caveats.join(' ')).toMatch(/renamed in Git/i);
+  });
+
   it('attaches a caveat to React components', () => {
     const candidates = findUnusedExportCandidates(
       [symbol({ symbolKind: 'react-component', symbolName: 'Widget' })],

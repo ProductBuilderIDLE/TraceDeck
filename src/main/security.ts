@@ -27,7 +27,7 @@ function isAllowedNavigationUrl(rawUrl: string): boolean {
 function contentSecurityPolicy(): string {
   const directives = [
     "default-src 'self'",
-    "script-src 'self'",
+    "script-src 'self' blob:",
     // Tailwind and Cytoscape both inject inline style attributes at runtime.
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
@@ -43,7 +43,7 @@ function contentSecurityPolicy(): string {
   if (DEV_SERVER_ORIGIN) {
     const ws = DEV_SERVER_ORIGIN.replace(/^http/, 'ws');
     // The dev server needs eval for the HMR runtime and a websocket for updates.
-    directives[1] = `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${DEV_SERVER_ORIGIN}`;
+    directives[1] = `script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: ${DEV_SERVER_ORIGIN}`;
     directives[5] = `connect-src 'self' ${DEV_SERVER_ORIGIN} ${ws}`;
   }
 

@@ -8,11 +8,18 @@ const VIEW_TITLES: Record<ViewId, string> = {
   dashboard: 'Dashboard',
   graph: 'Dependency graph',
   explorer: 'Explorer',
+  'change-review': 'Change review',
   cycles: 'Circular dependencies',
   'unused-exports': 'Unused export candidates',
   architecture: 'Architecture rules',
   unresolved: 'Unresolved imports',
   'type-errors': 'Type errors',
+  'syntax-errors': 'Syntax errors',
+  'merge-conflicts': 'Merge conflicts',
+  todos: 'TODO comments',
+  duplicates: 'Duplicate code',
+  complexity: 'Complexity hotspots',
+  metrics: 'Metrics',
   reports: 'Reports',
   settings: 'Settings',
 };
@@ -21,11 +28,18 @@ const VIEW_TITLES: Record<ViewId, string> = {
 const CODE_CAPABLE: ReadonlySet<ViewId> = new Set<ViewId>([
   'graph',
   'explorer',
+  'change-review',
   'cycles',
   'unused-exports',
   'architecture',
   'unresolved',
   'type-errors',
+  'syntax-errors',
+  'merge-conflicts',
+  'todos',
+  'duplicates',
+  'complexity',
+  'metrics',
 ]);
 
 export function MainPanel({ children }: { children: React.ReactNode }): JSX.Element {

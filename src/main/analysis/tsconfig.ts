@@ -1,5 +1,7 @@
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import ts from 'typescript';
+import { ALWAYS_EXCLUDED_DIRS } from '@shared/constants';
 import { toPosixPath } from '../utils/glob';
 
 export interface PathAlias {
@@ -24,6 +26,21 @@ const CONFIG_FILENAMES: Array<{ name: string; kind: 'tsconfig' | 'jsconfig' }> =
   { name: 'tsconfig.json', kind: 'tsconfig' },
   { name: 'jsconfig.json', kind: 'jsconfig' },
 ];
+const excludedDirNames = new Set(ALWAYS_EXCLUDED_DIRS);
+export const MAX_PROJECT_CONFIGS = 12;
+
+export interface TsConfigDiscoveryResult {
+  configPaths: string[];
+  truncated: boolean;
+  omittedCount: number;
+  depthLimited: boolean;
+  maxDepth: number;
+}
+
+export interface ProjectTsConfigDiscoveryResult
+  extends Omit<TsConfigDiscoveryResult, 'configPaths'> {
+  configs: ProjectTsConfig[];
+}
 
 export const NO_TSCONFIG: ProjectTsConfig = {
   configPath: null,
@@ -98,6 +115,86 @@ export function loadProjectTsConfig(rootPath: string): ProjectTsConfig {
     warnings: [
       'No tsconfig.json or jsconfig.json was found. Only relative imports can be resolved.',
     ],
+  };
+}
+
+/**
+ * Finds compiler configurations in workspace-style projects without entering generated trees.
+ * The cap is deterministic and prevents a repository containing vendored projects from turning
+ * config discovery into an unbounded scan.
+ */
+export function discoverTsConfigs(rootPath: string, maxDepth = 3): TsConfigDiscoveryResult {
+  const found: string[] = [];
+  let depthLimited = false;
+
+  const walk = (directory: string, depth: number): void => {
+    for (const candidate of CONFIG_FILENAMES) {
+      const configPath = join(directory, candidate.name);
+      if (!existsSync(configPath)) continue;
+      found.push(configPath);
+      break;
+    }
+
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    const directories = entries
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.isSymbolicLink() &&
+          !excludedDirNames.has(entry.name),
+      )
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    if (depth >= maxDepth) {
+      if (directories.length > 0) depthLimited = true;
+      return;
+    }
+
+    for (const entry of directories) {
+      walk(join(directory, entry.name), depth + 1);
+    }
+  };
+
+  walk(rootPath, 0);
+  const sorted = found.sort((left, right) =>
+    toPosixPath(left).localeCompare(toPosixPath(right)),
+  );
+  const omittedCount = Math.max(0, sorted.length - MAX_PROJECT_CONFIGS);
+  return {
+    configPaths: sorted.slice(0, MAX_PROJECT_CONFIGS),
+    truncated: omittedCount > 0,
+    omittedCount,
+    depthLimited,
+    maxDepth,
+  };
+}
+
+/** Loads every usable root or nested config needed for per-package alias resolution. */
+export function discoverProjectTsConfigs(
+  rootPath: string,
+  maxDepth = 3,
+): ProjectTsConfigDiscoveryResult {
+  const discovery = discoverTsConfigs(rootPath, maxDepth);
+  const configs = discovery.configPaths
+    .map((configPath) => loadProjectTsConfig(dirname(configPath)))
+    .filter((config): config is ProjectTsConfig & { configPath: string } =>
+      config.configPath !== null,
+    );
+
+  return {
+    configs: configs.sort((left, right) =>
+      toPosixPath(left.configPath).localeCompare(toPosixPath(right.configPath)),
+    ),
+    truncated: discovery.truncated,
+    omittedCount: discovery.omittedCount,
+    depthLimited: discovery.depthLimited,
+    maxDepth: discovery.maxDepth,
   };
 }
 

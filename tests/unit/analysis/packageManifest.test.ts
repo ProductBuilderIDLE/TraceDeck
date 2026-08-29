@@ -111,10 +111,29 @@ describe('dependency classification', () => {
     expect(result).toMatchObject({ reason: 'alias-not-configured' });
   });
 
-  it('treats a stylesheet import as expected, not as a missing file', () => {
+  it('resolves a CSS file that is a graph source', () => {
+    const result = resolveImport('./styles/tokens.css', abs('src/app.ts'), {
+      rootPath: FIXTURE_ROOT,
+      tsConfig: NO_TSCONFIG,
+      knownFiles: buildKnownFileIndex([abs('src/app.ts'), abs('src/styles/tokens.css')]),
+    });
+
+    expect(result).toMatchObject({
+      status: 'resolved',
+      absolutePath: abs('src/styles/tokens.css'),
+    });
+  });
+
+  it('reports a missing CSS file as missing, not as a non-source asset', () => {
     const result = resolveImport('./styles/tokens.css', abs('src/app.ts'), context([]));
 
-    expect(result).toMatchObject({ reason: 'non-source-asset' });
+    expect(result).toMatchObject({ reason: 'file-not-found' });
+  });
+
+  it('treats a missing SCSS file as missing now that stylesheets are graph sources', () => {
+    const result = resolveImport('./styles/tokens.scss', abs('src/app.ts'), context([]));
+
+    expect(result).toMatchObject({ reason: 'file-not-found' });
   });
 
   it('treats image and JSON imports the same way', () => {

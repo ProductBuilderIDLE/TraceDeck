@@ -9,13 +9,14 @@ import {
   FolderOpen,
   PanelRightClose,
 } from 'lucide-react';
-import type { BlastRadiusEntry, BlastRadiusResult, FileDetail } from '@shared/types';
+import type { CoChangeEntry, BlastRadiusEntry, BlastRadiusResult, FileDetail } from '@shared/types';
 import { DEFAULT_MAX_TRAVERSAL_DEPTH, MAX_TRAVERSAL_DEPTH } from '@shared/constants';
 import { parseNodeId } from '@shared/nodeIds';
 import { useUiStore } from '../../store/uiStore';
 import { useAppStore } from '../../store/appStore';
 import { invoke } from '../../lib/ipc';
 import { Button, Caveat, PathLabel, RiskBadge, Spinner, Warning } from '../common/ui';
+import { ReviewEvidenceInspector } from '../changeReview/ReviewEvidenceInspector';
 
 function Section({
   title,
@@ -121,10 +122,119 @@ function ExplanationPaths({ entries }: { entries: readonly BlastRadiusEntry[] })
   );
 }
 
+function GitExtras({
+  projectId,
+  relativePath,
+}: {
+  projectId: number;
+  relativePath: string;
+}): JSX.Element {
+  const [blame, setBlame] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [cochange, setCochange] = useState<CoChangeEntry[]>([]);
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void invoke('git:blame', { projectId, relativePath })
+              .then((lines) => {
+                const first = lines[0];
+                setBlame(first ? `${first.author} ${first.commit.slice(0, 8)}` : 'No blame data');
+              })
+              .catch((error: unknown) => {
+                setMessage(error instanceof Error ? error.message : 'Git blame failed.');
+              });
+          }}
+        >
+          Blame
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void invoke('git:diff', { projectId, relativePath })
+              .then((result) => setBlame(result.diff.slice(0, 400) || 'No diff versus HEAD'))
+              .catch((error: unknown) => {
+                setMessage(error instanceof Error ? error.message : 'Git diff failed.');
+              });
+          }}
+        >
+          Diff HEAD
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void invoke('git:cochange', { projectId, relativePath })
+              .then(setCochange)
+              .catch((error: unknown) => {
+                setMessage(error instanceof Error ? error.message : 'Co-change lookup failed.');
+              });
+          }}
+        >
+          Co-change
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void invoke('git:renames', { projectId, relativePath })
+              .then((entries) => {
+                setBlame(
+                  entries.length === 0
+                    ? 'No recorded renames'
+                    : entries.map((entry) => `${entry.from} → ${entry.to}`).join('\n'),
+                );
+              })
+              .catch((error: unknown) => {
+                setMessage(error instanceof Error ? error.message : 'Rename lookup failed.');
+              });
+          }}
+        >
+          Renames
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void invoke('git:mergetool', { projectId, relativePath })
+              .then(() => setMessage('Merge tool started.'))
+              .catch((error: unknown) => {
+                setMessage(error instanceof Error ? error.message : 'Could not open mergetool.');
+              });
+          }}
+        >
+          Mergetool
+        </Button>
+      </div>
+      {blame && <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[10px] text-ink-muted">{blame}</pre>}
+      {cochange.length > 0 && (
+        <ul className="space-y-0.5">
+          {cochange.slice(0, 12).map((entry) => (
+            <li key={entry.relativePath} className="flex justify-between gap-2 text-[10px]">
+              <PathLabel path={entry.relativePath} />
+              <span className="font-mono text-ink-faint">{entry.sharedCommits}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {message && <p className="text-[10px] text-ink-faint">{message}</p>}
+    </div>
+  );
+}
+
 export function Inspector(): JSX.Element {
   const selectedNodeId = useUiStore((state) => state.selectedNodeId);
+  const reviewEvidence = useUiStore((state) => state.reviewEvidence);
   const toggleInspector = useUiStore((state) => state.toggleInspector);
   const openCode = useUiStore((state) => state.openCode);
+  const setHighlightNodeIds = useUiStore((state) => state.setHighlightNodeIds);
+  const setGraphSliceEdgeTypes = useUiStore((state) => state.setGraphSliceEdgeTypes);
+  const setActiveView = useUiStore((state) => state.setActiveView);
   const project = useAppStore((state) => state.currentProject);
 
   const [detail, setDetail] = useState<FileDetail | null>(null);
@@ -134,6 +244,16 @@ export function Inspector(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    if (reviewEvidence) {
+      // Review evidence is shown in its own inspector; never run current-only queries
+      // against SQLite for baseline-only or stale nodes.
+      setDetail(null);
+      setBlast(null);
+      setLoading(false);
+      setMessage(null);
+      return;
+    }
+
     if (!project || !selectedNodeId) {
       setDetail(null);
       setBlast(null);
@@ -166,7 +286,7 @@ export function Inspector(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [project, selectedNodeId, depth]);
+  }, [project, selectedNodeId, depth, reviewEvidence]);
 
   const parsed = selectedNodeId ? parseNodeId(selectedNodeId) : null;
 
@@ -218,7 +338,9 @@ export function Inspector(): JSX.Element {
         </div>
       </header>
 
-      {!selectedNodeId || !parsed ? (
+      {reviewEvidence ? (
+        <ReviewEvidenceInspector evidence={reviewEvidence} selectedNodeId={selectedNodeId} />
+      ) : !selectedNodeId || !parsed ? (
         <div className="flex-1 p-3">
           <p className="text-[11px] leading-relaxed text-ink-faint">
             Select a file or symbol to see its dependencies, dependents, blast radius, and change
@@ -273,7 +395,9 @@ export function Inspector(): JSX.Element {
                 <span className="font-mono text-2xl font-semibold tabular-nums">
                   <RiskBadge score={detail.riskScore.score} />
                 </span>
-                <span className="text-[11px] text-ink-faint">out of 100</span>
+                <span className="text-[11px] text-ink-faint">
+                  out of 100 · {detail.riskScore.percentile}th percentile in this repo
+                </span>
               </div>
 
               <ul className="space-y-1.5">
@@ -325,6 +449,33 @@ export function Inspector(): JSX.Element {
 
             {blast ? (
               <>
+                <div className="mb-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const ids = [
+                        blast.rootNodeId,
+                        ...blast.directDependents.flatMap((entry) => entry.explanationPath),
+                        ...blast.transitiveDependents.flatMap((entry) => entry.explanationPath),
+                      ];
+                      setHighlightNodeIds([...new Set(ids)]);
+                    }}
+                  >
+                    Draw blast path on graph
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setGraphSliceEdgeTypes(['call']);
+                      setActiveView('graph');
+                    }}
+                    title="Show only conservative function-call edges around this node"
+                  >
+                    Call-graph slice
+                  </Button>
+                </div>
                 <div className="mb-2.5 grid grid-cols-2 gap-2">
                   <div className="rounded border border-edge bg-surface-2 p-2">
                     <div className="font-mono text-lg tabular-nums text-ink">
@@ -358,6 +509,30 @@ export function Inspector(): JSX.Element {
               <p className="text-[11px] text-ink-faint">No blast radius available.</p>
             )}
           </Section>
+
+          {detail && (
+            <Section title="Structure">
+              <p className="text-[11px] text-ink-muted">
+                Fan-in {detail.fanIn} · Fan-out {detail.fanOut}
+                {detail.maxComplexity !== null ? ` · max complexity ${detail.maxComplexity}` : ''}
+                {detail.maxLcom !== null ? ` · LCOM ${detail.maxLcom.toFixed(2)}` : ''}
+              </p>
+              {detail.owners?.length ? (
+                <p className="mt-1 text-[11px] text-ink-muted">Owners: {detail.owners.join(', ')}</p>
+              ) : null}
+              {detail.entryPointsCovering?.length ? (
+                <p className="mt-1 text-[11px] text-ink-muted">
+                  Entry points covering this: {detail.entryPointsCovering.slice(0, 6).join(', ')}
+                </p>
+              ) : null}
+            </Section>
+          )}
+
+          {detail && (detail.testDependents?.length ?? 0) > 0 && (
+            <Section title="Tests that import this" count={detail.testDependents.length} defaultOpen={false}>
+              <EntryList entries={detail.testDependents} emptyLabel="No test file imports this." />
+            </Section>
+          )}
 
           {blast && (
             <>
@@ -409,7 +584,7 @@ export function Inspector(): JSX.Element {
             </>
           )}
 
-          {detail && detail.symbols.length > 0 && (
+          {detail && (detail.symbols?.length ?? 0) > 0 && (
             <Section title="Symbols" count={detail.symbols.length} defaultOpen={false}>
               <ul className="space-y-0.5">
                 {detail.symbols.map((symbol) => (
@@ -434,6 +609,12 @@ export function Inspector(): JSX.Element {
                   </li>
                 ))}
               </ul>
+            </Section>
+          )}
+
+          {detail && parsed && (
+            <Section title="Git" defaultOpen={false}>
+              <GitExtras projectId={project?.id ?? 0} relativePath={parsed.path} />
             </Section>
           )}
 

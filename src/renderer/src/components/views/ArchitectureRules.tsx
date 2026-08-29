@@ -3,8 +3,10 @@ import clsx from 'clsx';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ArchitectureRule, Severity } from '@shared/types';
 import { useAppStore } from '../../store/appStore';
+import { invoke } from '../../lib/ipc';
 import { Button, Caveat, EmptyState } from '../common/ui';
 import { FindingsView } from './Findings';
+import { ARCHITECTURE_PACKS } from '@shared/rulePacks';
 
 const SEVERITIES: Severity[] = ['info', 'low', 'medium', 'high'];
 
@@ -32,6 +34,80 @@ const EMPTY_DRAFT: Draft = {
   exceptions: '',
   enabled: true,
 };
+
+function layerLabel(pattern: string): string {
+  const trimmed = pattern.replace(/^\.\//, '').replace(/\*\*$/, '').replace(/\/$/, '');
+  const first = trimmed.split('/')[0] ?? pattern;
+  return first.replace(/[{}]/g, '');
+}
+
+function ForbiddenMatrix({ rules }: { rules: ArchitectureRule[] }): JSX.Element {
+  const layers = [...new Set(rules.flatMap((rule) => [layerLabel(rule.sourcePattern), layerLabel(rule.targetPattern)]))];
+  if (layers.length === 0) return <p className="text-[11px] text-ink-faint">No enabled rules.</p>;
+  const forbidden = new Set(rules.map((rule) => `${layerLabel(rule.sourcePattern)}>${layerLabel(rule.targetPattern)}`));
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-left text-[10px]">
+        <thead>
+          <tr>
+            <th className="py-1 pr-2 font-medium text-ink-faint">from \ to</th>
+            {layers.map((layer) => (
+              <th key={layer} className="px-1 font-mono font-medium text-ink-muted">{layer}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {layers.map((source) => (
+            <tr key={source}>
+              <td className="py-1 pr-2 font-mono text-ink-muted">{source}</td>
+              {layers.map((target) => (
+                <td key={target} className="px-1 text-center">
+                  {source === target ? '—' : forbidden.has(`${source}>${target}`) ? '✕' : '·'}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LayerDiagram({ rules }: { rules: ArchitectureRule[] }): JSX.Element {
+  const layers = [...new Set(rules.flatMap((rule) => [layerLabel(rule.sourcePattern), layerLabel(rule.targetPattern)]))];
+  if (layers.length === 0) return <></>;
+  const width = Math.max(240, layers.length * 88);
+  const height = 92;
+
+  return (
+    <div className="rounded-lg border border-edge p-3">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+        Layer diagram
+      </p>
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-24 w-full text-ink-muted">
+        {layers.map((layer, index) => {
+          const x = 16 + index * 88;
+          return (
+            <g key={layer}>
+              <rect x={x} y={28} width={72} height={28} rx={4} fill="none" stroke="currentColor" />
+              <text x={x + 36} y={46} textAnchor="middle" fontSize="9" fill="currentColor">
+                {layer}
+              </text>
+              {index < layers.length - 1 && (
+                <line x1={x + 72} y1={42} x2={x + 88} y2={42} stroke="currentColor" markerEnd="url(#arrow)" />
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <p className="mt-1 text-[10px] text-ink-faint">
+        Folders taken from enabled rule globs. Arrows are reading order, not allowed imports — the
+        matrix above is the policy.
+      </p>
+    </div>
+  );
+}
 
 function RuleEditor({
   draft,
@@ -238,6 +314,23 @@ export function ArchitectureRulesView(): JSX.Element {
               matching one pattern to files matching another, and is evaluated against resolved
               imports from the last scan.
             </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {ARCHITECTURE_PACKS.map((pack) => (
+                <Button
+                  key={pack.id}
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void invoke('rules:apply-pack', { projectId: project.id, packId: pack.id }).then(
+                      () => void loadRules(),
+                    );
+                  }}
+                  title={pack.description}
+                >
+                  Apply {pack.name}
+                </Button>
+              ))}
+            </div>
           </div>
           {!draft && (
             <Button size="sm" variant="primary" onClick={() => setDraft({ ...EMPTY_DRAFT })}>
@@ -325,6 +418,17 @@ export function ArchitectureRulesView(): JSX.Element {
               </li>
             ))}
           </ul>
+        )}
+        {rules.length > 0 && (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-edge p-3">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+                Forbidden matrix
+              </p>
+              <ForbiddenMatrix rules={rules.filter((rule) => rule.enabled)} />
+            </div>
+            <LayerDiagram rules={rules.filter((rule) => rule.enabled)} />
+          </div>
         )}
       </div>
 

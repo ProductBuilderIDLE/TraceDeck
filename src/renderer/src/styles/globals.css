@@ -91,4 +91,44 @@
   .mono-path {
     @apply font-mono text-[11px] leading-relaxed;
   }
+
+  .td-source-editor .monaco-editor,
+  .td-source-editor .overflow-guard {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  .td-source-dim {
+    filter: grayscale(0.4) saturate(0.55) brightness(0.88);
+  }
+
+  .td-source-lock-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    cursor: not-allowed;
+    background: rgb(var(--surface-0) / 0.18);
+  }
+
+  .td-mark-conflict {
+    background: rgb(var(--risk-med) / 0.15);
+  }
+
+  .td-mark-broken {
+    background: rgb(var(--risk-crit) / 0.15);
+  }
+
+  .td-gutter-conflict,
+  .td-glyph-conflict {
+    background: rgb(var(--risk-med));
+    width: 3px !important;
+    margin-left: 3px;
+  }
+
+  .td-gutter-broken,
+  .td-glyph-broken {
+    background: rgb(var(--risk-crit));
+    width: 3px !important;
+    margin-left: 3px;
+  }
 }

@@ -205,6 +205,157 @@ describe('FileRepository', () => {
   });
 });
 
+describe('ProjectFileRepository', () => {
+  let store: DataStore;
+  beforeEach(() => {
+    store = newStore();
+  });
+
+  it('upserts the complete inventory in deterministic path order', () => {
+    const { project, scan } = seedProject(store);
+
+    store.projectFiles.upsertMany([
+      {
+        projectId: project.id,
+        relativePath: 'src/index.ts',
+        absolutePath: '/tmp/demo/src/index.ts',
+        scanId: scan.id,
+        entryKind: 'regular',
+        extension: '.ts',
+        sizeBytes: 42,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        contentKind: 'text',
+        encoding: 'utf-8',
+        contentHash: 'hash-index',
+        isGitIgnored: false,
+        gitignoreRule: null,
+        isUserExcluded: false,
+        analysisStatus: 'eligible',
+        analysisReason: 'Supported TypeScript source file.',
+      },
+      {
+        projectId: project.id,
+        relativePath: 'README.md',
+        absolutePath: '/tmp/demo/README.md',
+        scanId: scan.id,
+        entryKind: 'regular',
+        extension: '.md',
+        sizeBytes: 7,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        contentKind: 'text',
+        encoding: 'utf-8',
+        contentHash: 'hash-readme',
+        isGitIgnored: true,
+        gitignoreRule: '*.md',
+        isUserExcluded: true,
+        analysisStatus: 'excluded',
+        analysisReason: 'Excluded by user configuration.',
+      },
+    ]);
+
+    expect(store.projectFiles.listByProject(project.id).map((file) => file.relativePath)).toEqual([
+      'README.md',
+      'src/index.ts',
+    ]);
+    expect(store.projectFiles.findByPath(project.id, 'README.md')).toMatchObject({
+      contentHash: 'hash-readme',
+      encoding: 'utf-8',
+      isGitIgnored: true,
+      gitignoreRule: '*.md',
+      isUserExcluded: true,
+      analysisStatus: 'excluded',
+    });
+  });
+
+  it('updates inventory rows, reassigns retained rows, removes missing rows, and counts capabilities', () => {
+    const { project, scan } = seedProject(store);
+    const rescan = store.scans.start(project.id, 'def5678');
+
+    const ids = store.projectFiles.upsertMany([
+      {
+        projectId: project.id,
+        relativePath: 'empty.txt',
+        absolutePath: '/tmp/demo/empty.txt',
+        scanId: scan.id,
+        entryKind: 'regular',
+        extension: '.txt',
+        sizeBytes: 0,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        contentKind: 'text',
+        encoding: null,
+        contentHash: null,
+        isGitIgnored: false,
+        gitignoreRule: null,
+        isUserExcluded: false,
+        analysisStatus: 'text-only',
+        analysisReason: 'Text files of this type are not graph sources.',
+      },
+      {
+        projectId: project.id,
+        relativePath: 'logo.png',
+        absolutePath: '/tmp/demo/logo.png',
+        scanId: scan.id,
+        entryKind: 'regular',
+        extension: '.png',
+        sizeBytes: 128,
+        modifiedAt: '2026-01-01T00:00:00.000Z',
+        contentKind: 'binary',
+        encoding: null,
+        contentHash: null,
+        isGitIgnored: false,
+        gitignoreRule: null,
+        isUserExcluded: false,
+        analysisStatus: 'binary',
+        analysisReason: 'Binary content is not analyzed.',
+      },
+    ]);
+
+    store.projectFiles.upsertMany([
+      {
+        projectId: project.id,
+        relativePath: 'empty.txt',
+        absolutePath: '/tmp/demo/empty.txt',
+        scanId: rescan.id,
+        entryKind: 'regular',
+        extension: '.txt',
+        sizeBytes: 1,
+        modifiedAt: '2026-01-02T00:00:00.000Z',
+        contentKind: 'text',
+        encoding: 'utf-8',
+        contentHash: 'hash-empty',
+        isGitIgnored: false,
+        gitignoreRule: null,
+        isUserExcluded: false,
+        analysisStatus: 'text-only',
+        analysisReason: 'Text files of this type are not graph sources.',
+      },
+    ]);
+    store.projectFiles.reassignToScan([ids.get('logo.png') as number], rescan.id);
+
+    expect(store.projectFiles.countsByCapability(project.id)).toEqual({
+      total: 2,
+      eligible: 0,
+      textOnly: 1,
+      binary: 1,
+      excluded: 0,
+      oversize: 0,
+      unreadable: 0,
+      symlink: 0,
+      gitIgnored: 0,
+      userExcluded: 0,
+    });
+    expect(store.projectFiles.findByPath(project.id, 'empty.txt')).toMatchObject({
+      sizeBytes: 1,
+      encoding: 'utf-8',
+      contentHash: 'hash-empty',
+      scanId: rescan.id,
+    });
+    expect(store.projectFiles.findByPath(project.id, 'logo.png')?.scanId).toBe(rescan.id);
+    expect(store.projectFiles.removeByIds([ids.get('logo.png') as number])).toBe(1);
+    expect(store.projectFiles.countByProject(project.id)).toBe(1);
+  });
+});
+
 describe('EdgeRepository', () => {
   let store: DataStore;
   beforeEach(() => {

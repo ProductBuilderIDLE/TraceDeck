@@ -273,6 +273,9 @@ export function buildGraph(files: readonly FileToBuild[], context: ResolverConte
           isTypeOnly: record.isTypeOnly,
           importedNames: record.importedNames,
           ...(record.isStarExport ? { isStarExport: true } : {}),
+          // Persisted so an incremental rescan can rebuild namespace-qualified call edges
+          // from stored rows without re-parsing the file.
+          ...(record.namespaceBinding ? { namespaceBinding: record.namespaceBinding } : {}),
         },
       });
 
@@ -311,6 +314,91 @@ export function buildGraph(files: readonly FileToBuild[], context: ResolverConte
           },
         });
       }
+    }
+
+    const localCallees = new Set(
+      file.parsed.symbols
+        .filter((symbol) => symbol.kind === 'function' || symbol.kind === 'react-component')
+        .map((symbol) => symbol.name),
+    );
+
+    const namespaceImports = new Map<string, (typeof file.parsed.imports)[number]>();
+    for (const record of file.parsed.imports) {
+      if (record.namespaceBinding && !record.isDynamicExpression) {
+        namespaceImports.set(record.namespaceBinding, record);
+      }
+    }
+
+    for (const call of file.parsed.calls) {
+      if (call.isPropertyAccess) {
+        // A property access names a member of whatever the receiver holds, and the receiver's
+        // value is not knowable without type information. Matching the bare member name
+        // against this file's imports would attribute `logger.send()` to an imported `send`,
+        // inventing an edge the code does not contain. A namespace import is the exception:
+        // `ns.send()` can only mean the module bound to `ns`, so that one is followed.
+        const record = call.receiver ? namespaceImports.get(call.receiver) : undefined;
+        if (!record) continue;
+
+        const resolution = resolveImport(record.specifier, file.absolutePath, context);
+        if (resolution.status !== 'resolved') continue;
+        const targetRelative = absoluteToRelative.get(toPosixPath(resolution.absolutePath));
+        if (!targetRelative) continue;
+
+        const declaration = findDeclaration(targetRelative, call.callee, new Set());
+        edges.push({
+          fromNodeType: 'file',
+          fromNodeId: fromId,
+          toNodeType: declaration ? 'symbol' : 'file',
+          toNodeId: declaration
+            ? symbolNodeId(declaration.filePath, declaration.symbolName)
+            : fileNodeId(targetRelative),
+          edgeType: 'call',
+          sourceRelativePath: file.relativePath,
+          sourceLine: call.line,
+          metadata: {
+            callee: call.callee,
+            calleeReceiver: call.receiver ?? undefined,
+            specifier: record.specifier,
+          },
+        });
+        continue;
+      }
+
+      const importRecord = file.parsed.imports.find((record) =>
+        record.importedNames.includes(call.callee),
+      );
+      if (importRecord && !importRecord.isDynamicExpression) {
+        const resolution = resolveImport(importRecord.specifier, file.absolutePath, context);
+        if (resolution.status !== 'resolved') continue;
+        const targetRelative = absoluteToRelative.get(toPosixPath(resolution.absolutePath));
+        if (!targetRelative) continue;
+        const declaration = findDeclaration(targetRelative, call.callee, new Set());
+        edges.push({
+          fromNodeType: 'file',
+          fromNodeId: fromId,
+          toNodeType: declaration ? 'symbol' : 'file',
+          toNodeId: declaration
+            ? symbolNodeId(declaration.filePath, declaration.symbolName)
+            : fileNodeId(targetRelative),
+          edgeType: 'call',
+          sourceRelativePath: file.relativePath,
+          sourceLine: call.line,
+          metadata: { callee: call.callee, specifier: importRecord.specifier },
+        });
+        continue;
+      }
+
+      if (!localCallees.has(call.callee)) continue;
+      edges.push({
+        fromNodeType: 'file',
+        fromNodeId: fromId,
+        toNodeType: 'symbol',
+        toNodeId: symbolNodeId(file.relativePath, call.callee),
+        edgeType: 'call',
+        sourceRelativePath: file.relativePath,
+        sourceLine: call.line,
+        metadata: { callee: call.callee },
+      });
     }
   }
 

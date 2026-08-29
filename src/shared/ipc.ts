@@ -3,15 +3,24 @@ import type {
   ArchitectureRuleConfiguration,
   ArchitectureRuleType,
   BlastRadiusResult,
+  BlameLine,
+  ChurnEntry,
+  CoChangeEntry,
   DashboardStats,
+  DiffImpactResult,
   EdgeType,
+  EditorConfigSettings,
   FileDetail,
   Finding,
   FindingType,
+  GitDiffFile,
   GraphPayload,
   NodeType,
+  PreviewFinding,
   Project,
   ProjectConfiguration,
+  ProjectMetrics,
+  RenameEntry,
   ReportConfiguration,
   RiskScore,
   SavedReport,
@@ -19,8 +28,20 @@ import type {
   ScanProgress,
   SearchResult,
   SourceDocument,
+  ProjectFile,
+  TextSearchHit,
+  SymbolKind,
 } from './types';
 import type { ThemeId } from './theme';
+import type {
+  ChangeReviewSummary,
+  ReviewExportFormat,
+  ReviewFileDiff,
+  ReviewFilters,
+  ReviewPage,
+  ReviewSection,
+  ReviewStatus,
+} from './changeReview';
 
 /**
  * Every handler returns this envelope. Failures are converted to a plain message in the
@@ -65,6 +86,8 @@ export interface SearchRequest {
   query: string;
   types?: NodeType[];
   limit?: number;
+  exportedOnly?: boolean;
+  kinds?: SymbolKind[];
 }
 
 export interface FindingsRequest {
@@ -114,6 +137,50 @@ export interface UpdateProjectConfigRequest {
   configuration: ProjectConfiguration;
 }
 
+export interface ReviewStatusRequest {
+  projectId: number;
+}
+
+export interface ReviewStartRequest {
+  projectId: number;
+  traversalDepth: number;
+}
+
+export interface ReviewCancelRequest {
+  projectId: number;
+  operationId: string;
+}
+
+export interface ReviewSummaryRequest {
+  projectId: number;
+}
+
+export interface ReviewQueryRequest {
+  projectId: number;
+  reviewId: number;
+  section: ReviewSection;
+  filters: ReviewFilters;
+  cursor?: string;
+  pageLimit?: number;
+}
+
+export interface ReviewFileDiffRequest {
+  projectId: number;
+  reviewId: number;
+  relativePath: string;
+}
+
+export interface ReviewExportRequest {
+  projectId: number;
+  reviewId: number;
+  format: ReviewExportFormat;
+}
+
+export interface ReviewExportResult {
+  cancelled: boolean;
+  fileName: string | null;
+}
+
 /**
  * The single source of truth for the IPC surface. Adding a channel here and implementing
  * the handler is the only supported way to widen what the renderer can reach.
@@ -128,6 +195,14 @@ export interface IpcContract {
   'scan:start': { request: StartScanRequest; response: { scanId: number } };
   'scan:cancel': { request: { projectId: number }; response: { cancelled: boolean } };
   'scan:latest': { request: { projectId: number }; response: Scan | null };
+
+  'review:status': { request: ReviewStatusRequest; response: ReviewStatus };
+  'review:start': { request: ReviewStartRequest; response: { operationId: string } };
+  'review:cancel': { request: ReviewCancelRequest; response: { requested: boolean } };
+  'review:summary': { request: ReviewSummaryRequest; response: ChangeReviewSummary | null };
+  'review:query': { request: ReviewQueryRequest; response: ReviewPage };
+  'review:file-diff': { request: ReviewFileDiffRequest; response: ReviewFileDiff };
+  'review:export': { request: ReviewExportRequest; response: ReviewExportResult };
 
   'dashboard:stats': { request: { projectId: number }; response: DashboardStats };
 
@@ -157,9 +232,60 @@ export interface IpcContract {
     response: { version: string; electron: string; databasePath: string };
   };
   'system:set-theme': { request: { theme: ThemeId }; response: void };
+  /** Every inventoried file for a project, sorted by path, with no implicit cap. */
+  'inventory:list': { request: { projectId: number }; response: ProjectFile[] };
+  /** Writes an edited text file, refusing the write if it changed on disk since it was read. */
+  'source:save': {
+    request: { projectId: number; relativePath: string; baseHash: string; text: string };
+    response: SourceDocument;
+  };
   'source:read': {
     request: { projectId: number; relativePath: string };
     response: SourceDocument;
+  };
+  'search:text': {
+    request: { projectId: number; query: string; limit?: number };
+    response: TextSearchHit[];
+  };
+  'analysis:preview': {
+    request: { projectId: number; relativePath: string; text: string };
+    response: PreviewFinding[];
+  };
+  'analysis:diff-impact': {
+    request: { projectId: number; changedPaths: string[] };
+    response: DiffImpactResult;
+  };
+  'analysis:folder-metrics': { request: { projectId: number }; response: ProjectMetrics };
+  'git:changed-files': {
+    request: { projectId: number; ref?: string };
+    response: GitDiffFile[];
+  };
+  'git:diff': {
+    request: { projectId: number; relativePath: string; ref?: string };
+    response: { diff: string };
+  };
+  'git:blame': { request: { projectId: number; relativePath: string }; response: BlameLine[] };
+  'git:churn': { request: { projectId: number }; response: ChurnEntry[] };
+  'git:cochange': {
+    request: { projectId: number; relativePath: string };
+    response: CoChangeEntry[];
+  };
+  'git:renames': {
+    request: { projectId: number; relativePath: string };
+    response: RenameEntry[];
+  };
+  'git:mergetool': { request: { projectId: number; relativePath: string }; response: { started: boolean } };
+  'source:format': {
+    request: { projectId: number; relativePath: string; text: string };
+    response: { text: string; usedPrettier: boolean; editorConfig: EditorConfigSettings };
+  };
+  'rules:apply-pack': {
+    request: { projectId: number; packId: string };
+    response: { created: number };
+  };
+  'system:save-export': {
+    request: { defaultFileName: string; contents: string; encoding: 'utf8' | 'base64' };
+    response: { filePath: string; cancelled: boolean };
   };
 }
 
@@ -176,6 +302,13 @@ export const IPC_CHANNELS = [
   'scan:start',
   'scan:cancel',
   'scan:latest',
+  'review:status',
+  'review:start',
+  'review:cancel',
+  'review:summary',
+  'review:query',
+  'review:file-diff',
+  'review:export',
   'dashboard:stats',
   'graph:query',
   'graph:blast-radius',
@@ -195,7 +328,23 @@ export const IPC_CHANNELS = [
   'system:reveal-path',
   'system:app-info',
   'system:set-theme',
+  'inventory:list',
   'source:read',
+  'source:save',
+  'search:text',
+  'analysis:preview',
+  'analysis:diff-impact',
+  'analysis:folder-metrics',
+  'git:changed-files',
+  'git:diff',
+  'git:blame',
+  'git:churn',
+  'git:cochange',
+  'git:renames',
+  'git:mergetool',
+  'source:format',
+  'rules:apply-pack',
+  'system:save-export',
 ] as const satisfies readonly IpcChannel[];
 
 /** Main -> renderer push events. These are one-way and carry no privileged handles. */

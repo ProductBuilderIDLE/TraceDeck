@@ -13,8 +13,15 @@ import {
   Settings,
   ShieldAlert,
   TriangleAlert,
+  FileWarning,
+  GitMerge,
+  ListTodo,
+  Copy,
+  Gauge,
+  BarChart3,
   Square,
   Unlink,
+  GitCompare,
 } from 'lucide-react';
 import { PRIVACY_NOTICE } from '@shared/constants';
 import { useUiStore, type ViewId } from '../../store/uiStore';
@@ -194,6 +201,7 @@ export function Sidebar(): JSX.Element {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'graph', label: 'Dependency graph', icon: GitBranch },
     { id: 'explorer', label: 'Explorer', icon: FolderTree },
+    { id: 'change-review', label: 'Change review', icon: GitCompare },
   ];
 
   const findings: NavItem[] = [
@@ -226,6 +234,41 @@ export function Sidebar(): JSX.Element {
       label: 'Type errors',
       icon: TriangleAlert,
       count: stats?.typeErrorCount,
+    },
+    {
+      id: 'syntax-errors',
+      label: 'Syntax errors',
+      icon: FileWarning,
+      count: stats?.syntaxErrorCount,
+    },
+    {
+      id: 'merge-conflicts',
+      label: 'Merge conflicts',
+      icon: GitMerge,
+      count: stats?.mergeConflictCount,
+    },
+    {
+      id: 'todos',
+      label: 'TODO comments',
+      icon: ListTodo,
+      count: stats?.todoCommentCount,
+    },
+    {
+      id: 'duplicates',
+      label: 'Duplicate code',
+      icon: Copy,
+      count: stats?.duplicateCodeCount,
+    },
+    {
+      id: 'complexity',
+      label: 'Complexity',
+      icon: Gauge,
+      count: stats?.complexityHotspotCount,
+    },
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      icon: BarChart3,
     },
   ];
 

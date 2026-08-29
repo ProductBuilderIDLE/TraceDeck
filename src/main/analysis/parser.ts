@@ -12,6 +12,8 @@ export interface ParsedImport {
   importedNames: string[];
   /** True for `export * from '...'`, which makes downstream usage impossible to pin down. */
   isStarExport: boolean;
+  /** Local name bound by `import * as ns from '...'`, which qualifies calls made through it. */
+  namespaceBinding?: string;
   /**
    * True when the specifier was not a plain string literal, e.g. `import(buildPath(name))`.
    * These are reported as unresolvable rather than guessed at.
@@ -29,10 +31,243 @@ export interface ParsedSymbol {
   metadata: SymbolMetadata;
 }
 
+export interface ParsedCall {
+  callee: string;
+  line: number;
+  /**
+   * True when the call was written as `something.callee()` rather than as a bare `callee()`.
+   *
+   * The distinction matters because the callee name alone cannot say what a property access
+   * refers to: `logger.send()` and an imported `send` share a name but nothing else. Edge
+   * construction refuses to attribute a property access unless the receiver is a namespace
+   * import, which is the one receiver whose target is statically known.
+   */
+  isPropertyAccess: boolean;
+  /** The identifier before the dot, when there is one. Null for `this.f()` or `a.b.c()`. */
+  receiver: string | null;
+}
+
+export interface SyntaxIssue {
+  line: number;
+  column: number;
+  message: string;
+}
+
 export interface ParsedFile {
   imports: ParsedImport[];
   symbols: ParsedSymbol[];
+  calls: ParsedCall[];
   parseErrors: string[];
+  /** Line-addressable syntax problems; the scanner turns these into findings. */
+  syntaxIssues: SyntaxIssue[];
+  /** Honest boundaries that did not prevent parsing, such as unanalysed template regions. */
+  limitations: string[];
+}
+
+interface SourceRegion {
+  start: number;
+  end: number;
+}
+
+interface PreparedSource {
+  contents: string;
+  limitations: string[];
+}
+
+interface ScriptExtraction {
+  regions: SourceRegion[];
+  limitations: string[];
+}
+
+interface ScriptAttribute {
+  present: boolean;
+  value: string | null;
+}
+
+const SOURCE_CONTAINER_EXTENSIONS = ['.vue', '.svelte', '.astro'] as const;
+
+function sourceContainerExtension(
+  fileName: string,
+): (typeof SOURCE_CONTAINER_EXTENSIONS)[number] | null {
+  const lowerName = fileName.toLowerCase();
+  return SOURCE_CONTAINER_EXTENSIONS.find((candidate) => lowerName.endsWith(candidate)) ?? null;
+}
+
+/** Limitations are derived from the file type so incremental scans can reproduce them exactly. */
+export function sourceContainerLimitations(fileName: string): string[] {
+  const extension = sourceContainerExtension(fileName);
+  if (!extension) return [];
+  return [
+    `${extension} source container: script regions analysed by the TypeScript compiler; ` +
+      'template and style regions analysed via tree-sitter.',
+  ];
+}
+
+function scriptAttribute(attributes: string, name: string): ScriptAttribute {
+  const match = new RegExp(
+    `(?:^|\\s)${name}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+)))?`,
+    'i',
+  ).exec(attributes);
+  return {
+    present: match !== null,
+    value: match ? (match[1] ?? match[2] ?? match[3] ?? null) : null,
+  };
+}
+
+function markupCommentRegions(contents: string): SourceRegion[] {
+  const regions: SourceRegion[] = [];
+  for (const match of contents.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
+    if (match.index === undefined) continue;
+    regions.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return regions;
+}
+
+function scriptRegions(contents: string): ScriptExtraction {
+  const regions: SourceRegion[] = [];
+  const limitations: string[] = [];
+  const comments = markupCommentRegions(contents);
+  const blocks = /<script\b([^>]*)>[\s\S]*?<\/script\s*>/gi;
+
+  for (const match of contents.matchAll(blocks)) {
+    if (match.index === undefined) continue;
+    const matchIndex = match.index;
+    if (comments.some((comment) => matchIndex >= comment.start && matchIndex < comment.end)) {
+      continue;
+    }
+
+    const attributes = match[1] ?? '';
+    const source = scriptAttribute(attributes, 'src');
+    if (source.present) {
+      limitations.push(
+        `External script block "${source.value ?? '(unspecified)'}" was not analysed; ` +
+          'source-container script references are not read automatically.',
+      );
+      continue;
+    }
+
+    const language = scriptAttribute(attributes, 'lang');
+    if (
+      language.present &&
+      !['js', 'javascript', 'ts', 'typescript'].includes((language.value ?? '').toLowerCase())
+    ) {
+      limitations.push(
+        `Script block with unsupported language "${language.value ?? '(unspecified)'}" was not analysed.`,
+      );
+      continue;
+    }
+
+    const type = scriptAttribute(attributes, 'type');
+    if (
+      type.present &&
+      ![
+        'module',
+        'text/javascript',
+        'application/javascript',
+        'text/typescript',
+        'application/typescript',
+      ].includes((type.value ?? '').toLowerCase())
+    ) {
+      limitations.push(
+        `Script block with unsupported type "${type.value ?? '(unspecified)'}" was not analysed.`,
+      );
+      continue;
+    }
+
+    const openingEnd = match[0].indexOf('>');
+    const closingStart = match[0].toLowerCase().lastIndexOf('</script');
+    if (openingEnd < 0 || closingStart < openingEnd) continue;
+    regions.push({
+      start: matchIndex + openingEnd + 1,
+      end: matchIndex + closingStart,
+    });
+  }
+
+  return { regions, limitations };
+}
+
+export function markupTagRegions(contents: string, tag: 'template' | 'style'): SourceRegion[] {
+  const regions: SourceRegion[] = [];
+  const comments = markupCommentRegions(contents);
+  const blocks = new RegExp(`<${tag}\\b([^>]*)>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi');
+  for (const match of contents.matchAll(blocks)) {
+    if (match.index === undefined) continue;
+    if (comments.some((comment) => match.index >= comment.start && match.index < comment.end)) {
+      continue;
+    }
+    const openingEnd = match[0].indexOf('>');
+    const closingStart = match[0].toLowerCase().lastIndexOf(`</${tag}`);
+    if (openingEnd < 0 || closingStart < openingEnd) continue;
+    regions.push({
+      start: match.index + openingEnd + 1,
+      end: match.index + closingStart,
+    });
+  }
+  return regions;
+}
+
+/** Keeps tagged regions and blanks everything else, preserving line numbers. */
+export function blankOutside(contents: string, regions: readonly SourceRegion[]): string {
+  if (regions.length === 0) return contents.replace(/[^\n]/g, ' ');
+  const ordered = [...regions].sort((left, right) => left.start - right.start);
+  let output = '';
+  let cursor = 0;
+  for (const region of ordered) {
+    output += contents.slice(cursor, region.start).replace(/[^\n]/g, ' ');
+    output += contents.slice(region.start, region.end);
+    cursor = region.end;
+  }
+  output += contents.slice(cursor).replace(/[^\n]/g, ' ');
+  return output;
+}
+
+/**
+ * Inspects source-container boundaries without invoking the TypeScript parser. Scanner uses this
+ * on every already-read file so caveats remain available when an unchanged graph row is reused.
+ */
+export function inspectSourceContainerLimitations(fileName: string, contents: string): string[] {
+  if (!sourceContainerExtension(fileName)) return [];
+  return [...sourceContainerLimitations(fileName), ...scriptRegions(contents).limitations];
+}
+
+function astroFrontmatterRegion(contents: string): SourceRegion | null {
+  const match = /^\uFEFF?---[^\S\r\n]*(?:\r?\n)[\s\S]*?(?:\r?\n)---(?=\r?\n|$)/.exec(contents);
+  if (!match) return null;
+
+  const openingEnd = match[0].indexOf('\n');
+  const closingStart = match[0].lastIndexOf('\n---');
+  if (openingEnd < 0 || closingStart < openingEnd) return null;
+  return { start: openingEnd + 1, end: closingStart + 1 };
+}
+
+/** Keeps source offsets stable by blanking non-script characters but retaining every line break. */
+function maskOutsideRegions(contents: string, regions: readonly SourceRegion[]): string {
+  const masked = contents.replace(/[^\r\n]/g, ' ').split('');
+
+  for (const region of regions) {
+    for (let index = region.start; index < region.end; index += 1) {
+      masked[index] = contents[index] as string;
+    }
+  }
+
+  return masked.join('');
+}
+
+function prepareSource(fileName: string, contents: string): PreparedSource {
+  const extension = sourceContainerExtension(fileName);
+  if (!extension) return { contents, limitations: [] };
+
+  const extraction = scriptRegions(contents);
+  const regions = extraction.regions;
+  if (extension === '.astro') {
+    const frontmatter = astroFrontmatterRegion(contents);
+    if (frontmatter) regions.unshift(frontmatter);
+  }
+
+  return {
+    contents: maskOutsideRegions(contents, regions),
+    limitations: [...sourceContainerLimitations(fileName), ...extraction.limitations],
+  };
 }
 
 function scriptKindFor(fileName: string): ts.ScriptKind {
@@ -88,10 +323,92 @@ function extendsReactComponent(node: ts.ClassDeclaration): boolean {
   );
 }
 
+function complexityOf(node: ts.Node): { complexity: number; nestingDepth: number } {
+  let decisions = 0;
+  let maxNest = 0;
+
+  const walk = (current: ts.Node, nest: number): void => {
+    const isDecision =
+      ts.isIfStatement(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current) ||
+      ts.isWhileStatement(current) ||
+      ts.isDoStatement(current) ||
+      ts.isCaseClause(current) ||
+      ts.isCatchClause(current) ||
+      ts.isConditionalExpression(current) ||
+      (ts.isBinaryExpression(current) &&
+        (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+          current.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+          current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken));
+
+    const next = isDecision ? nest + 1 : nest;
+    if (isDecision) {
+      decisions += 1;
+      if (next > maxNest) maxNest = next;
+    }
+    ts.forEachChild(current, (child) => walk(child, next));
+  };
+
+  walk(node, 0);
+  return { complexity: decisions + 1, nestingDepth: maxNest };
+}
+
+function classLcom(node: ts.ClassDeclaration): number {
+  const fields = new Set<string>();
+  for (const member of node.members) {
+    if (ts.isPropertyDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
+      fields.add(member.name.text);
+    }
+  }
+
+  const methods: Array<Set<string>> = [];
+  for (const member of node.members) {
+    let body: ts.Block | ts.Expression | undefined;
+    if (ts.isMethodDeclaration(member)) body = member.body;
+    else if (
+      ts.isPropertyDeclaration(member) &&
+      member.initializer &&
+      (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
+    ) {
+      body = member.initializer.body;
+    }
+    if (!body) continue;
+    const used = new Set<string>();
+    const visit = (current: ts.Node): void => {
+      if (
+        ts.isPropertyAccessExpression(current) &&
+        current.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        ts.isIdentifier(current.name) &&
+        fields.has(current.name.text)
+      ) {
+        used.add(current.name.text);
+      }
+      ts.forEachChild(current, visit);
+    };
+    visit(body);
+    methods.push(used);
+  }
+
+  if (methods.length <= 1 || fields.size === 0) return 0;
+  let disconnected = 0;
+  let pairs = 0;
+  for (let left = 0; left < methods.length; left += 1) {
+    for (let right = left + 1; right < methods.length; right += 1) {
+      pairs += 1;
+      const shared = [...(methods[left] ?? [])].some((field) => methods[right]?.has(field));
+      if (!shared) disconnected += 1;
+    }
+  }
+  return pairs === 0 ? 0 : disconnected / pairs;
+}
+
 export function parseSourceFile(fileName: string, contents: string): ParsedFile {
+  const prepared = prepareSource(fileName, contents);
   const sourceFile = ts.createSourceFile(
     fileName,
-    contents,
+    prepared.contents,
     ts.ScriptTarget.Latest,
     /* setParentNodes */ true,
     scriptKindFor(fileName),
@@ -99,7 +416,26 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   const imports: ParsedImport[] = [];
   const symbols: ParsedSymbol[] = [];
+  const calls: ParsedCall[] = [];
   const parseErrors: string[] = [];
+  const syntaxIssues: SyntaxIssue[] = [];
+
+  const rawParseDiagnostics = (
+    sourceFile as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }
+  ).parseDiagnostics;
+  if (rawParseDiagnostics) {
+    for (const diagnostic of rawParseDiagnostics) {
+      const position =
+        diagnostic.start === undefined
+          ? { line: 0, character: 0 }
+          : sourceFile.getLineAndCharacterOfPosition(diagnostic.start);
+      syntaxIssues.push({
+        line: position.line + 1,
+        column: position.character + 1,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+      });
+    }
+  }
 
   const lineOf = (node: ts.Node): number => {
     try {
@@ -138,12 +474,15 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
     const clause = node.importClause;
     const importedNames: string[] = [];
     let isTypeOnly = clause?.isTypeOnly ?? false;
+    let namespaceBinding: string | undefined;
 
     if (clause?.name) importedNames.push('default');
     if (clause?.namedBindings) {
       if (ts.isNamespaceImport(clause.namedBindings)) {
         // `import * as ns` consumes the whole module surface; individual names are unknown.
+        // The binding itself is kept, because `ns.foo()` does name a specific target.
         importedNames.push('*');
+        namespaceBinding = clause.namedBindings.name.text;
       } else {
         for (const element of clause.namedBindings.elements) {
           importedNames.push((element.propertyName ?? element.name).text);
@@ -160,6 +499,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
       importedNames,
       isStarExport: false,
       isDynamicExpression: false,
+      ...(namespaceBinding ? { namespaceBinding } : {}),
     });
   }
 
@@ -264,6 +604,31 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
     });
   }
 
+  function recordLocalCall(node: ts.CallExpression): void {
+    if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return;
+    if (ts.isIdentifier(node.expression) && node.expression.text === 'require') return;
+
+    if (ts.isIdentifier(node.expression)) {
+      calls.push({
+        callee: node.expression.text,
+        line: lineOf(node),
+        isPropertyAccess: false,
+        receiver: null,
+      });
+      return;
+    }
+
+    if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.name)) {
+      const target = node.expression.expression;
+      calls.push({
+        callee: node.expression.name.text,
+        line: lineOf(node),
+        isPropertyAccess: true,
+        receiver: ts.isIdentifier(target) ? target.text : null,
+      });
+    }
+  }
+
   function recordDeclaration(node: ts.Node): void {
     if (ts.isFunctionDeclaration(node) && node.name) {
       const name = node.name.text;
@@ -277,6 +642,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
         metadata: {
           isAsync: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
           paramCount: node.parameters.length,
+          ...complexityOf(node),
         },
       });
       return;
@@ -293,7 +659,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
         isDefaultExport: isExported(node) && isDefault(node),
         startLine: lineOf(node),
         endLine: endLineOf(node),
-        metadata: {},
+        metadata: { lcom: classLcom(node) },
       });
       return;
     }
@@ -355,6 +721,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
             looksLikeComponentName(name) && containsJsx(initializer) ? 'react-component' : 'function';
           metadata.isAsync = hasModifier(initializer, ts.SyntaxKind.AsyncKeyword);
           metadata.paramCount = initializer.parameters.length;
+          Object.assign(metadata, complexityOf(initializer));
         }
 
         addSymbol({
@@ -398,6 +765,7 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
       recordExportDeclaration(node);
     } else if (ts.isCallExpression(node)) {
       recordCallLikeImport(node);
+      recordLocalCall(node);
     } else if (ts.isImportEqualsDeclaration(node)) {
       if (
         ts.isExternalModuleReference(node.moduleReference) &&
@@ -425,5 +793,5 @@ export function parseSourceFile(fileName: string, contents: string): ParsedFile 
 
   ts.forEachChild(sourceFile, visit);
 
-  return { imports, symbols, parseErrors };
+  return { imports, symbols, calls, parseErrors, syntaxIssues, limitations: prepared.limitations };
 }

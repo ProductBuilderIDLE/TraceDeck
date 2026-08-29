@@ -108,6 +108,10 @@ describe('type checking during a scan', () => {
     expect(store.findings.countByType(project.id, 'type-error')).toBe(before - 1);
   });
 
+  // With no tsconfig the fallback program runs on empty compiler options, and TypeScript
+  // then auto-includes every `@types/*` package it can find near the files. That makes this
+  // one check as slow as the ambient environment is large, so it gets its own budget rather
+  // than failing whenever the repository gains a sizeable type package.
   it('falls back to default compiler options when no tsconfig covers the files', async () => {
     const noConfig = store.projects.createOrTouch('no-config', resolve(BROKEN_ROOT, 'src'));
     const configured = store.projects.updateConfiguration(noConfig.id, {
@@ -122,7 +126,7 @@ describe('type checking during a scan', () => {
     expect(scan.status).toBe('completed');
     expect(scan.summary?.typeCheck?.ran).toBe(true);
     expect(scan.summary?.limitations.join(' ')).toMatch(/default compiler options/i);
-  });
+  }, 30_000);
 });
 
 describe('type errors in reports', () => {

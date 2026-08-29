@@ -1,12 +1,15 @@
+import { basename } from 'node:path';
 import type { DataStore } from '../db';
 import {
   ChangeReviewCoordinatorError,
   type ChangeReviewCoordinator,
 } from '../services/changeReview/coordinator';
 import { ChangeReviewQueryError, queryReview } from '../services/changeReview/query';
+import { renderChangeReview, reviewFileExtension } from '../services/changeReview/report';
 import { HandledError, type HandlerMap } from './registry';
 import {
   parseReviewCancelRequest,
+  parseReviewExportRequest,
   parseReviewFileDiffRequest,
   parseReviewQueryRequest,
   parseReviewStartRequest,
@@ -47,10 +50,72 @@ async function handleReview<T>(operation: () => T | Promise<T>): Promise<T> {
   }
 }
 
+export interface ReviewExportDependencies {
+  showSaveDialog(defaultFileName: string): Promise<{ canceled: boolean; filePath?: string }>;
+  writeFile(filePath: string, contents: string, encoding: 'utf8'): Promise<void>;
+  generatedAt(): string;
+}
+
+function noopExportDependencies(): ReviewExportDependencies {
+  return {
+    showSaveDialog: async () => ({ canceled: true }),
+    writeFile: async () => undefined,
+    generatedAt: () => new Date().toISOString(),
+  };
+}
+
+/** Strips anything that could steer a written file outside the folder the user picked. */
+function safeFileName(value: string): string {
+  const cleaned = value
+    .replace(/[^a-zA-Z0-9-_ ]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .toLowerCase();
+  return cleaned.length > 0 ? cleaned.slice(0, 80) : 'tracedeck-review';
+}
+
 export function reviewHandlers(
   store: DataStore,
   coordinator: ChangeReviewCoordinator,
+  dependencies: ReviewExportDependencies = noopExportDependencies(),
 ): HandlerMap {
+  async function exportReview(
+    projectId: number,
+    reviewId: number,
+    format: import('@shared/changeReview').ReviewExportFormat,
+  ): Promise<import('@shared/ipc').ReviewExportResult> {
+    const record = store.changeReviews.findById(reviewId);
+    if (!record || record.projectId !== projectId) {
+      throw new ChangeReviewQueryError('REVIEW_NOT_FOUND');
+    }
+    if (!record.compatible || !record.result) {
+      throw new ChangeReviewQueryError('REVIEW_INCOMPATIBLE');
+    }
+
+    const project = store.projects.findById(projectId);
+    if (!project) throw new ChangeReviewCoordinatorError('NOT_FOUND', '');
+
+    const status = await coordinator.status(projectId);
+    const latest = status.latestReview?.reviewId === record.id ? status.latestReview : null;
+    const freshness = latest?.freshness ?? 'stale';
+    const staleReasons = latest?.staleReasons ?? ['REVIEW_NOT_CURRENT'];
+
+    const defaultName = `${safeFileName(project.name)}-change-review${reviewFileExtension(format)}`;
+    const result = await dependencies.showSaveDialog(defaultName);
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true, fileName: null };
+    }
+
+    const rendered = renderChangeReview(record.result, {
+      freshness,
+      staleReasons,
+      generatedAt: dependencies.generatedAt(),
+    }, format);
+
+    await dependencies.writeFile(result.filePath, rendered, 'utf8');
+    return { cancelled: false, fileName: basename(result.filePath) };
+  }
+
   return {
     'review:status': (payload) => handleReview(async () => {
       const { projectId } = parseReviewStatusRequest(payload);
@@ -91,6 +156,11 @@ export function reviewHandlers(
         throw new ChangeReviewQueryError('REVIEW_INCOMPATIBLE');
       }
       return coordinator.fileDiff(record, request.relativePath);
+    }),
+
+    'review:export': (payload) => handleReview(async () => {
+      const { projectId, reviewId, format } = parseReviewExportRequest(payload);
+      return exportReview(projectId, reviewId, format);
     }),
   };
 }

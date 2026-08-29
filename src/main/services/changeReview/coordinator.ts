@@ -728,3 +728,16 @@ export class ChangeReviewCoordinator {
     }
   }
 }
+
+/** Constructs the production coordinator shared by Electron and the CLI. */
+export function createChangeReviewCoordinator(
+  store: DataStore,
+  operations: ProjectOperationRegistry,
+  traceDeckVersion: string,
+): ChangeReviewCoordinator {
+  return new ChangeReviewCoordinator(
+    store,
+    operations,
+    defaultChangeReviewCoordinatorDependencies(traceDeckVersion),
+  );
+}

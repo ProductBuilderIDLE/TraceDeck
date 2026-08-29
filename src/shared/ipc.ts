@@ -35,6 +35,7 @@ import type {
 import type { ThemeId } from './theme';
 import type {
   ChangeReviewSummary,
+  ReviewExportFormat,
   ReviewFileDiff,
   ReviewFilters,
   ReviewPage,
@@ -169,6 +170,17 @@ export interface ReviewFileDiffRequest {
   relativePath: string;
 }
 
+export interface ReviewExportRequest {
+  projectId: number;
+  reviewId: number;
+  format: ReviewExportFormat;
+}
+
+export interface ReviewExportResult {
+  cancelled: boolean;
+  fileName: string | null;
+}
+
 /**
  * The single source of truth for the IPC surface. Adding a channel here and implementing
  * the handler is the only supported way to widen what the renderer can reach.
@@ -190,6 +202,7 @@ export interface IpcContract {
   'review:summary': { request: ReviewSummaryRequest; response: ChangeReviewSummary | null };
   'review:query': { request: ReviewQueryRequest; response: ReviewPage };
   'review:file-diff': { request: ReviewFileDiffRequest; response: ReviewFileDiff };
+  'review:export': { request: ReviewExportRequest; response: ReviewExportResult };
 
   'dashboard:stats': { request: { projectId: number }; response: DashboardStats };
 
@@ -295,6 +308,7 @@ export const IPC_CHANNELS = [
   'review:summary',
   'review:query',
   'review:file-diff',
+  'review:export',
   'dashboard:stats',
   'graph:query',
   'graph:blast-radius',

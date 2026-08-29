@@ -1,6 +1,7 @@
 import { ALL_FINDING_TYPES } from '@shared/types';
 import type {
   ReviewCancelRequest,
+  ReviewExportRequest,
   ReviewFileDiffRequest,
   ReviewQueryRequest,
   ReviewStartRequest,
@@ -9,6 +10,7 @@ import type {
 } from '@shared/ipc';
 import type {
   ReviewDeltaDirection,
+  ReviewExportFormat,
   ReviewFileChangeType,
   ReviewFilters,
   ReviewGitState,
@@ -41,6 +43,7 @@ const REVIEW_SECTIONS: readonly ReviewSection[] = [
   'no-known-tests',
   'limitations',
 ];
+const EXPORT_FORMATS: readonly ReviewExportFormat[] = ['text', 'json', 'markdown', 'html'];
 const FILE_CHANGE_TYPES: readonly ReviewFileChangeType[] = ['added', 'modified', 'deleted', 'renamed'];
 const GIT_STATES: readonly ReviewGitState[] = ['staged', 'unstaged', 'untracked'];
 const SEVERITIES: readonly Severity[] = ['info', 'low', 'medium', 'high'];
@@ -249,5 +252,15 @@ export function parseReviewFileDiffRequest(payload: unknown): ReviewFileDiffRequ
     projectId: requirePositiveId(value.projectId, 'projectId'),
     reviewId: requirePositiveId(value.reviewId, 'reviewId'),
     relativePath: normalizeRelativePath(value.relativePath, 'relativePath', false),
+  };
+}
+
+export function parseReviewExportRequest(payload: unknown): ReviewExportRequest {
+  const value = asObject(payload);
+  rejectUnexpectedFields(value, ['projectId', 'reviewId', 'format']);
+  return {
+    projectId: requirePositiveId(value.projectId, 'projectId'),
+    reviewId: requirePositiveId(value.reviewId, 'reviewId'),
+    format: requireEnum(value.format, 'format', EXPORT_FORMATS),
   };
 }

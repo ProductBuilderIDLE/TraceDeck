@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseReviewCancelRequest,
+  parseReviewExportRequest,
   parseReviewFileDiffRequest,
   parseReviewQueryRequest,
   parseReviewStartRequest,
@@ -42,6 +43,7 @@ describe('review IPC request validation', () => {
       parseReviewSummaryRequest,
       parseReviewQueryRequest,
       parseReviewFileDiffRequest,
+      parseReviewExportRequest,
     ];
     for (const parse of parsers) {
       for (const payload of [null, undefined, 'payload', 1, []]) {
@@ -59,6 +61,27 @@ describe('review IPC request validation', () => {
     for (const reviewId of [0, -1, 1.5, '7', Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => parseReviewQueryRequest({ ...query(), reviewId })).toThrow(ValidationError);
     }
+  });
+
+  it('accepts only closed review export formats and fields', () => {
+    expect(parseReviewExportRequest({ projectId: 2, reviewId: 7, format: 'text' })).toEqual({
+      projectId: 2,
+      reviewId: 7,
+      format: 'text',
+    });
+    for (const format of ['json', 'markdown', 'html']) {
+      expect(parseReviewExportRequest({ projectId: 2, reviewId: 7, format })).toMatchObject({ format });
+    }
+    for (const format of ['', 'sarif', 'pdf', 1, null]) {
+      expect(() => parseReviewExportRequest({ projectId: 2, reviewId: 7, format }))
+        .toThrow(ValidationError);
+    }
+    expect(() => parseReviewExportRequest({
+      projectId: 2,
+      reviewId: 7,
+      format: 'text',
+      destination: 'C:\\private\\report.txt',
+    })).toThrow(ValidationError);
   });
 
   it('requires an integer start depth and clamps it to 1-25', () => {

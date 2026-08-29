@@ -7,7 +7,10 @@ import {
 } from '@main/services/changeReview/coordinator';
 import type { HandlerMap } from '@main/ipc/registry';
 import { HandledError } from '@main/ipc/registry';
-import { reviewHandlers } from '@main/ipc/reviewHandlers';
+import {
+  reviewHandlers,
+  type ReviewExportDependencies,
+} from '@main/ipc/reviewHandlers';
 import type { ReviewFileDiff, ReviewFilters, ReviewSection, ReviewStatus } from '@shared/changeReview';
 import { IPC_CHANNELS } from '@shared/ipc';
 
@@ -95,6 +98,17 @@ function currentStatus(overrides: Partial<ReviewStatus> = {}): ReviewStatus {
   };
 }
 
+function exportDependencies(
+  overrides: Partial<ReviewExportDependencies> = {},
+): ReviewExportDependencies {
+  return {
+    showSaveDialog: vi.fn(async () => ({ canceled: true })),
+    writeFile: vi.fn(async () => undefined),
+    generatedAt: () => '2026-08-29T12:34:56.000Z',
+    ...overrides,
+  };
+}
+
 function handler<C extends keyof HandlerMap>(handlers: HandlerMap, channel: C) {
   const selected = handlers[channel];
   if (!selected) throw new Error(`Missing handler ${String(channel)}`);
@@ -102,7 +116,7 @@ function handler<C extends keyof HandlerMap>(handlers: HandlerMap, channel: C) {
 }
 
 describe('reviewHandlers', () => {
-  it('keeps the closed contract and review handler allowlists at exactly the same six channels', () => {
+  it('keeps the closed contract and review handler allowlists at exactly the same seven channels', () => {
     const coordinator = {
       status: vi.fn(), start: vi.fn(), cancel: vi.fn(), summary: vi.fn(), fileDiff: vi.fn(),
     };
@@ -117,11 +131,11 @@ describe('reviewHandlers', () => {
       'review:summary',
       'review:query',
       'review:file-diff',
+      'review:export',
     ];
 
     expect(Object.keys(handlers)).toEqual(expected);
     expect(IPC_CHANNELS.filter((channel) => channel.startsWith('review:'))).toEqual(expected);
-    expect(IPC_CHANNELS).not.toContain('review:export');
   });
 
   it('validates malformed requests before coordinator or database access', async () => {
@@ -139,6 +153,9 @@ describe('reviewHandlers', () => {
     });
     await expect(handler(handlers, 'review:query')({
       projectId: 2, reviewId: 7, section: 'files', filters: filters(), ref: 'HEAD~1',
+    })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await expect(handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'pdf', destination: 'C:\\private',
     })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
 
     expect(coordinator.status).not.toHaveBeenCalled();
@@ -214,6 +231,103 @@ describe('reviewHandlers', () => {
       projectId: 2, reviewId: 7, relativePath: 'gone.ts',
     })).rejects.toMatchObject({ code: 'REVIEW_INCOMPATIBLE' });
     expect(coordinator.fileDiff).not.toHaveBeenCalled();
+  });
+
+  it('validates export before database, status, dialog, or write access', async () => {
+    const findReview = vi.fn();
+    const findProject = vi.fn();
+    const coordinator = {
+      status: vi.fn(), start: vi.fn(), cancel: vi.fn(), summary: vi.fn(), fileDiff: vi.fn(),
+    };
+    const dependencies = exportDependencies();
+    const handlers = reviewHandlers({
+      changeReviews: { findById: findReview },
+      projects: { findById: findProject },
+    } as unknown as DataStore, coordinator as unknown as ChangeReviewCoordinator, dependencies);
+
+    await expect(handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'pdf', destination: 'C:\\private',
+    })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(findReview).not.toHaveBeenCalled();
+    expect(findProject).not.toHaveBeenCalled();
+    expect(coordinator.status).not.toHaveBeenCalled();
+    expect(dependencies.showSaveDialog).not.toHaveBeenCalled();
+    expect(dependencies.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('uses a safe project-derived default and writes nothing when export is cancelled', async () => {
+    const dependencies = exportDependencies();
+    const coordinator = {
+      status: vi.fn(async () => currentStatus()),
+      start: vi.fn(), cancel: vi.fn(), summary: vi.fn(), fileDiff: vi.fn(),
+    };
+    const handlers = reviewHandlers({
+      changeReviews: { findById: vi.fn(() => record()) },
+      projects: { findById: vi.fn(() => ({ id: 2, name: '../Unsafe\\\0 Project' })) },
+    } as unknown as DataStore, coordinator as unknown as ChangeReviewCoordinator, dependencies);
+
+    await expect(handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'markdown',
+    })).resolves.toEqual({ cancelled: true, fileName: null });
+    const defaultName = vi.mocked(dependencies.showSaveDialog).mock.calls[0]?.[0];
+    expect(defaultName).toMatch(/^[A-Za-z0-9._-]+-change-review\.md$/);
+    expect(defaultName).not.toMatch(/[\\/\0]/);
+    expect(dependencies.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('exports stale output with an unavoidable warning and returns only the native basename', async () => {
+    const destination = 'C:\\private\\native\\stale-review.md';
+    const dependencies = exportDependencies({
+      showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: destination })),
+    });
+    const coordinator = {
+      status: vi.fn(async () => currentStatus({
+        latestReview: {
+          reviewId: 7,
+          freshness: 'stale',
+          staleReasons: ['WORKING_TREE_CHANGED'],
+        },
+      })),
+      start: vi.fn(), cancel: vi.fn(), summary: vi.fn(), fileDiff: vi.fn(),
+    };
+    const handlers = reviewHandlers({
+      changeReviews: { findById: vi.fn(() => record()) },
+      projects: { findById: vi.fn(() => ({ id: 2, name: 'Example Project' })) },
+    } as unknown as DataStore, coordinator as unknown as ChangeReviewCoordinator, dependencies);
+
+    await expect(handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'markdown',
+    })).resolves.toEqual({ cancelled: false, fileName: 'stale-review.md' });
+    expect(dependencies.writeFile).toHaveBeenCalledWith(
+      destination,
+      expect.stringMatching(/WARNING[\s\S]*WORKING_TREE_CHANGED/),
+      'utf8',
+    );
+    const response = await handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'markdown',
+    });
+    expect(JSON.stringify(response)).not.toContain('private');
+  });
+
+  it('rejects incompatible export before status, dialog, or write access', async () => {
+    const stored = record();
+    stored.compatible = false;
+    stored.result = null;
+    const dependencies = exportDependencies();
+    const coordinator = {
+      status: vi.fn(), start: vi.fn(), cancel: vi.fn(), summary: vi.fn(), fileDiff: vi.fn(),
+    };
+    const handlers = reviewHandlers({
+      changeReviews: { findById: vi.fn(() => stored) },
+      projects: { findById: vi.fn(() => ({ id: 2, name: 'Example' })) },
+    } as unknown as DataStore, coordinator as unknown as ChangeReviewCoordinator, dependencies);
+
+    await expect(handler(handlers, 'review:export')({
+      projectId: 2, reviewId: 7, format: 'text',
+    })).rejects.toMatchObject({ code: 'REVIEW_INCOMPATIBLE' });
+    expect(coordinator.status).not.toHaveBeenCalled();
+    expect(dependencies.showSaveDialog).not.toHaveBeenCalled();
+    expect(dependencies.writeFile).not.toHaveBeenCalled();
   });
 });
 

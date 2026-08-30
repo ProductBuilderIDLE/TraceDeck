@@ -61,7 +61,7 @@ implemented**. Section **J was skipped** on purpose (cloud, LSP, CVE fetch, remo
 | **D. Git** | Local only: diff vs HEAD, blame, mergetool, co-change, per-file renames, 90-day churn. Rename history caveats unused-export findings. Inspector Git section. |
 | **E. Metrics** | Cyclomatic + nesting on functions; simplified LCOM on classes. Complexity / todo / duplicate findings. Metrics view: Martin I/A, fan-in/out, file outliers, churn heatmap. `analysis:folder-metrics` returns `{ folders, outliers }` (`ProjectMetrics`), not a bare array. |
 | **F. Architecture** | Rule packs (`src/shared/rulePacks.ts`, `rules:apply-pack`). Forbidden matrix + layer diagram. Public API + licenses on the dashboard. Headless CLI (`npm run scan`). |
-| **G. Graph UX** | Saved views (`localStorage` key `tracedeck.graph-views`). Collapse barrels, edge filters, minimap, PNG **and** SVG export. Focus neighborhood; call-slice clear button. Community colouring; 360 mode. Hovering does not highlight — see [Accessibility](#accessibility). |
+| **G. Graph UX** | Saved views (`localStorage` key `tracedeck.graph-views`). Collapse barrels, edge filters, minimap, PNG **and** SVG export. Focus neighborhood; call-slice clear button. Nodes are labelled boxes nested in directory containers; colour is opt-in. Hovering shows a readout but never highlights — see [Accessibility](#accessibility). |
 | **H. Search / reports** | Explorer kind filters, exported-only, recents, text hits. Findings j/k/Enter. Report sections `changed-since-scan` and `blast-radius`. CODEOWNERS overlay on file detail. |
 | **I. Languages** | TSC for JS/TS with tsbuildinfo cache under `.tracedeck/cache`. SCSS/Sass/Less are **graph sources**. `.styl` stays a non-source asset. JSON imports remain graph leaves. Package-root rewrites: Go `go.mod`, Python `pyproject.toml`/`setup.cfg` + `__init__.py`, Rust `Cargo.toml`. `.tracedeck` is excluded from discovery. |
 || **J. Change review** | Compare the working tree with `HEAD` in a dedicated workspace. Capture Git status, materialize the committed tree to a verified temporary root, scan both baseline and target, and persist only the latest completed `change_reviews` row. CLI supports `--review`, `--review-format` (text, JSON, Markdown, or HTML), `--review-output`, and `--review-depth`. The GUI always exports a review as Markdown. |
@@ -160,27 +160,36 @@ says "many things point at this," nothing more.
 
 - File and symbol graph (Cytoscape). Focus neighborhood, folder prefix, node-type and edge-type
   filters (including hiding type-only edges).
-- Soft/hard node limits (`GRAPH_NODE_SOFT_LIMIT` 1500 / `HARD` 5000) because canvas interaction
-  dies past that.
+- `GRAPH_NODE_SOFT_LIMIT` (1500) keeps canvas interaction responsive; the server clamps at
+  `GRAPH_NODE_HARD_LIMIT` (5000).
 - Blast radius (BFS on reverse edges, shortest path as the explanation).
 - Call-graph slice: inspector button restricts the graph to `'call'` edges and symbol nodes.
 - Saved layouts/views, collapse barrels, minimap, PNG and SVG export.
 - **Ctrl-click** (or Cmd-click) gathers nodes into a set, ringed rather than recoloured so
   the community colours stay readable. **Shift-drag** sweeps a box and adds everything it
-  catches to the same set, so several sweeps accumulate. Adding **Ctrl** to either — 
+  catches to the same set, so several sweeps accumulate. Adding **Ctrl** to either —
   Ctrl-Shift-click, or Ctrl-Shift-drag — opens every gathered file in the editor at once,
-  capped at twelve tabs. Clicking empty canvas clears the set. Ctrl-click works in 360 too;
-  box sweeping is 2D only, since a rectangle does not describe a selection in a rotated 3D
-  scene.
+  capped at twelve tabs. Clicking empty canvas clears the set.
 - The inspector opens when you click something real. Clicking empty canvas clears the
   selection without opening an empty panel.
-- Nodes are coloured by **community** — files that depend on each other more than on the rest
-  of the project — not by folder. Communities are found with deterministic modularity
-  optimisation (Louvain) and named after the directory most of their files share, so the
-  colour shows how the code is coupled rather than how it is filed.
-- A **360** mode renders the same graph in 3D: folders branch outward from a single root and
-  dependencies are drawn as arcs across the tree, with an orbit camera. It is a second mode,
-  not a replacement — the 2D view keeps the exact layouts and the vector export.
+- Nodes are **labelled boxes**, sized to their own text, nested inside a container for each
+  directory. Containment is expressed as parentage rather than as edges, so a folder draws as
+  a box holding its files. Layout runs on nodes alone: feeding import edges to it pulls every
+  file toward everything it imports and collapses the structure into a diagonal.
+- **Colour is off by default.** Every node wears one neutral tone, because a graph that
+  arrives pre-painted spends its colour budget before the reader has asked a question. A
+  selector offers three modes:
+  - **No colour** — the default.
+  - **Colour by directory** — one colour per top-level directory. Each directory has a swatch
+    in the legend, so you can choose the colours yourself; the choice is stored per device in
+    `localStorage` under `tracedeck.graph-folder-colors`.
+  - **Colour by community** — files that depend on each other more than on the rest of the
+    project, found with deterministic modularity optimisation (Louvain) and named after the
+    directory most of their files share. This shows how the code is coupled rather than how
+    it is filed.
+- Import edges are drawn faintly over the structure and can be hidden entirely, leaving the
+  directory tree on its own.
+
 
 ### Findings
 
@@ -270,10 +279,14 @@ another asserts every theme clears a contrast floor.
 
 ## Accessibility
 
-**Hovering a graph node does nothing on purpose.** An earlier build highlighted a node's
+**Hovering a graph node never changes the canvas.** An earlier build highlighted a node's
 neighbourhood on mouseover, which faded and unfaded the entire canvas every time the pointer
 crossed a node. Moving across a dense graph made that a full-screen flash repeating several
 times a second — a photosensitivity hazard, and unpleasant for everyone else.
+
+Hovering now shows a small readout beside the cursor — path, import counts, community, and
+whether the file is an entry point or sits in a cycle. It is a DOM overlay: one element
+appears, and nothing on the graph is repainted.
 
 Highlighting is bound to **click** instead. A selection holds until you clear it, so the
 neighbourhood stays readable while you work with it rather than disappearing when the mouse

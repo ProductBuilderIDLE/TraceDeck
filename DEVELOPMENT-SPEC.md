@@ -5,8 +5,8 @@
 > become. If this document and the code disagree, the code is the truth and this document is
 > the bug.
 
-**App version:** `0.1.0` · **Scale:** 112 TypeScript/TSX source files, ~21,500 lines, 35 test
-files, 481 passing tests.
+**App version:** `0.1.0` · **Scale:** 138 TypeScript/TSX source files, ~31,400 lines, 55 test
+files plus one Electron end-to-end spec, 760 passing tests, 51 IPC channels.
 
 ---
 
@@ -126,8 +126,7 @@ or safe to remove. A file with a high score is not broken. A file with a low sco
 | --- | --- | --- |
 | Shell | Electron 38 + electron-vite | Local filesystem access with a web UI |
 | UI | React 18, Zustand, Tailwind | Small, no heavy framework runtime |
-| 2D graph | Cytoscape (+ fcose, dagre) | Mature layouts, canvas rendering, SVG export |
-| 3D graph | three.js | Instanced rendering scales past canvas hit-testing |
+| Graph | Cytoscape (+ fcose, dagre) | Compound nodes, mature layouts, SVG export |
 | Editor | Monaco | Real editing without becoming an IDE |
 | Main | Node + TypeScript | — |
 | Database | SQLite via `better-sqlite3`, WAL | Synchronous, embedded, no server |
@@ -135,6 +134,7 @@ or safe to remove. A file with a high score is not broken. A file with a low sco
 | Other languages | tree-sitter WASM (`web-tree-sitter`) | Uniform grammars, ships offline |
 | Type checking | Real `ts.Program` + `getPreEmitDiagnostics` | Genuine compiler truth |
 | Tests | Vitest | — |
+| End-to-end | Playwright (`_electron`) | Drives the real application, no browser download |
 | CLI | `vite-node` | Reuses main-process code unchanged |
 
 **Why not tree-sitter for JS/TS?** Barrel forwarding, `export *`, `import type`, path aliases,
@@ -192,15 +192,17 @@ src/
 ├── renderer/src/               React UI
 │   ├── components/
 │   │   ├── layout/             Sidebar, main panel, inspector
-│   │   ├── views/              Dashboard, GraphView, SpaceCanvas, Explorer,
-│   │   │                       Findings, Metrics, ArchitectureRules, Reports,
-│   │   │                       Settings, CodePanel, SourceEditor, CodeChanges
+│   │   ├── views/              Dashboard, GraphView, Explorer, Findings, Metrics,
+│   │   │                       ArchitectureRules, Reports, Settings, CodePanel,
+│   │   │                       SourceEditor, CodeChanges, ChangeReview
+│   │   ├── changeReview/       ReviewPage, ReviewHeader, ReviewTabs, ReviewFilters,
+│   │   │                       ReviewDiff, ReviewEvidenceInspector
 │   │   └── common/             Shared primitives and error boundary
-│   ├── store/                  Zustand state (appStore, uiStore)
+│   ├── store/                  Zustand state (appStore, uiStore, reviewStore)
 │   └── lib/                    Typed IPC client, theme, Monaco setup
 └── shared/                     Types, IPC contract, constants, rule packs, theme,
                                 mergeConflicts, sourceMarkers, jsonSyntax, lineDiff,
-                                communities, radialLayout, nodeIds, sourceLanguage
+                                communities, changeReview, nodeIds, sourceLanguage
 ```
 
 ### Security settings
@@ -525,20 +527,6 @@ appears or disappears.
 Each community is named after the deepest directory shared by most of its members, with depth
 breaking ties toward the more specific name.
 
-### Radial 3D layout
-
-Folders own equal-area regions of a sphere; children divide the parent's region in proportion to
-how many files they contain; depth becomes distance from the root.
-
-Equal area matters — a latitude/longitude split would crowd the poles and empty the equator.
-Splitting along the region's **longer side** keeps regions compact rather than degenerating into
-slivers as the tree deepens. Dependency arcs are quadratic Béziers with a control point pulled
-to 55% of the midpoint's distance from the origin, so a long edge reads as one line with two
-ends instead of attaching itself to whatever it crosses.
-
-Deterministic: the same file list always produces the same positions, so a rescan does not
-shuffle a space the reader has learned. Verified holding 3000 distinct positions.
-
 ### Complexity, clones, todos, Martin metrics
 
 Function cyclomatic complexity (`COMPLEXITY_HOTSPOT_THRESHOLD = 10`, high severity at 20) and
@@ -759,7 +747,8 @@ Sidebar → main panel → inspector. Views:
 | View | Shows |
 | --- | --- |
 | **Dashboard** | Counts, scan summary, limitations, git impact, scan comparison, public API, licenses, top impact files |
-| **Graph** | The 2D dependency graph and the 360 mode |
+| **Graph** | The dependency graph: directory containment with imports overlaid |
+| **Change review** | Working tree compared with `HEAD`: evidence, possible impact, diffs, export |
 | **Explorer** | Full inventory with kind filters, exported-only, recents, in-file text hits |
 | **Findings** | One view per finding type, with `j`/`k`/`Enter` navigation |
 | **Metrics** | Martin instability/abstractness, fan-in/out, outliers, churn heatmap |
@@ -778,21 +767,62 @@ remounts the view instead of leaving a stale crash on screen.
 
 ## 19. The graph, in depth
 
-### 2D — Cytoscape
+### Structure, not a force field
 
-- File, symbol, and folder nodes. Node **size** grows with connectivity, damped by a square
-  root so one hub cannot dwarf everything else.
-- Node **colour is community, not folder.** Folder hues showed how the repository is *filed*,
-  which the sidebar already says. Communities show how it is *coupled* — a folder whose files
-  never reference each other is three groups wearing one name, and two folders that constantly
-  cross-import are one group pretending to be two. Hues step by the golden angle so consecutive
-  communities land far apart on the wheel.
-- Legend lists communities with names and file counts.
+The graph answers "where does this live and what touches it", so **directory containment is
+the skeleton and imports are drawn over it**. Three earlier attempts failed in instructive
+ways, and the reasons are the design:
+
+- **Dots with captions underneath** made every node identical until decoded against a legend,
+  and the captions were hidden below a zoom threshold the graph never opened above. A real
+  project rendered as a field of coloured dots.
+- **Import edges laid out hierarchically** produced a diagonal cascade. Ranks are import depth,
+  and nearly every file links sideways to several others.
+- **Containment drawn as edges** produced a tall thin comb: a folder tree has few ranks but
+  hundreds of leaves in the last one.
+
+What works:
+
+- **Nodes are labelled boxes** (`round-rectangle`, `width`/`height` from the label, padding)
+  that grow to fit their own text, so nothing clips and nothing needs decoding.
+- **Containment is parentage, not edges.** A file is a *child* of its folder node, so Cytoscape
+  draws each folder as a labelled box holding its files, nested to any depth.
+- **Layout runs on nodes alone** — `cy.nodes().layout(...)`, no edges. Every edge pulls its
+  endpoints together, so a file importing six others is pulled six ways; excluding them lets
+  compound packing decide the shape. fcose with `tile: true` is the "Structure" layout.
+- **Import edges are overlaid faintly** (`structural = 0`, low opacity, unbundled bezier) and
+  can be hidden entirely, leaving the directory tree alone.
+- Shape carries node kind: ellipse for a file, diamond for a symbol, box for a folder. Colour
+  and border are already spent, so shape is the channel left that reads without a click.
+
+### Colour is opt-in
+
+Every node wears **one neutral tone by default**. A graph that arrives pre-painted in nine
+hues spends its entire colour budget before the reader has asked a question. Three modes:
+
+| Mode | Meaning |
+| --- | --- |
+| **No colour** | The default. Structure carries the meaning. |
+| **Colour by directory** | One colour per top-level directory, with a swatch per directory in the legend so the user picks their own. Stored per device in `localStorage` under `tracedeck.graph-folder-colors`. |
+| **Colour by community** | Files that depend on each other more than on the rest of the project. Shows how the code is *coupled* rather than how it is *filed*. |
+
+Default per-directory hues are generated as `hsl()`, which `<input type="color">` silently
+replaces with black, so they are resolved to `#rrggbb` through a canvas before reaching the
+control.
+
+### Everything else
+
 - Focus neighbourhood, folder prefix filter, node-type and edge-type filters, hide type-only
   edges, collapse barrels, minimap, saved views in `localStorage` under `tracedeck.graph-views`.
-- Layouts: fcose and dagre.
+- Layouts: Structure (fcose, compound tiling), Layered (dagre), Tree, Concentric. fcose is
+  `randomize: false`, because a rescan must not rearrange a picture the reader has learned.
 - Export to **PNG and SVG**.
 - Call-graph slice: restricts to `call` edges and symbol nodes, with a clear button.
+- A **change-review overlay** can drive the graph instead of the live scan, classing nodes and
+  edges as added, removed, baseline, or target. While it is active the graph follows the
+  overlay payload rather than refetching.
+- The legend folds away behind a button, because it had grown tall enough to cover the graph
+  it explains.
 
 **Interaction:**
 
@@ -808,31 +838,15 @@ remounts the view instead of leaving a stale crash on screen.
 The gathered set lives apart from `selectedNodeId`, because the inspector describes exactly one
 node and would otherwise flicker through everything added.
 
-**Hovering does nothing, on purpose.** Highlighting a neighbourhood on mouseover faded and
+**Hovering never repaints the canvas.** Highlighting a neighbourhood on mouseover faded and
 unfaded the entire canvas every time the pointer crossed a node; on a dense graph that is a
-full-screen flash several times a second — a photosensitivity hazard. This must not be
+full-screen flash several times a second — a photosensitivity hazard. That must not be
 reintroduced as a feature.
 
-### 360 — three.js
-
-A second mode, never a replacement. The 2D view keeps the exact layouts and the vector export,
-which WebGL cannot produce.
-
-- Folders branch outward from a single root; dependency arcs cross the tree; orbit camera.
-- One `InstancedMesh` plus two `LineSegments` sets, so node count costs memory rather than draw
-  calls. Requests `GRAPH_NODE_HARD_LIMIT` rather than the soft limit, because the soft limit
-  exists for canvas hit-testing, which WebGL does not share.
-- Node geometry is a 20-triangle icosahedron. Every triangle is also a triangle the picker may
-  test per instance, so detail costs interaction latency, not just draw time.
-- **Render every frame.** On-demand rendering — redraw only when the camera moved — left the
-  view blank until the first drag, because a scene rebuilt between frames had no way to
-  announce itself. The optimisation was the bug.
-- **Pick once per frame.** Pointer events fire far faster than frames, and each pick walks every
-  instance, so raycasting per event made moving the mouse cost more than drawing the scene.
-- Colours are read from live theme tokens and rebaked on theme change, because a canvas cannot
-  read CSS variables.
-- Ctrl-click gathering works here too. Box sweeping does not: a screen rectangle does not
-  describe a selection in a scene you have rotated.
+Hovering instead shows a **readout beside the cursor** — path, imports and imported-by counts,
+node kind, community, and entry-point or cycle badges. It is a DOM overlay: one element
+appears, and nothing on the graph is touched. It clears on pan and zoom, because the card is
+placed in screen space and a viewport move would strand it.
 
 ---
 
@@ -937,8 +951,8 @@ single source of truth. Tokens: `surface-0` through `surface-4`, `edge`, `ink`, 
 `ink-faint`, `brand`, `brand-dim`, `risk-low`, `risk-med`, `risk-high`, `risk-crit`.
 
 Tailwind composes them as `rgb(var(--token) / <alpha-value>)` so opacity modifiers keep working.
-Canvas and WebGL renderers cannot read CSS variables, so they read live token values and
-restyle on theme change. The Electron window background and native title bar follow. The choice
+The graph canvas cannot read CSS variables, so it reads live token values and restyles on
+theme change. The Electron window background and native title bar follow. The choice
 is stored per device in `localStorage`.
 
 A unit test pins the CSS first-paint fallback to the TypeScript definition. Another asserts
@@ -955,14 +969,15 @@ every theme clears a contrast floor.
 
 ## 25. Testing doctrine
 
-Vitest. 35 test files, 481 passing tests.
+Vitest for unit and integration work; Playwright driving real Electron for end to end.
+55 test files plus one end-to-end spec, 760 passing tests.
 
 Coverage must include: import resolution and path aliases; Tarjan cycle detection including a
 20,000-node chain; blast-radius traversal and explanation paths; unused-export conservatism;
 architecture rule evaluation; SQLite migrations **and rollback**; repository operations; IPC
 payload validation; path-escape rejection; report rendering and HTML escaping; language-root
-rewrites; template and style analysis; community detection determinism; radial layout
-determinism at 3000 nodes; and a full end-to-end scan.
+rewrites; template and style analysis; community detection determinism; and a full
+end-to-end scan.
 
 Change review coverage includes: Git status capture, `HEAD` materialization, baseline/target snapshot
 extraction, comparison, impact traversal, query pagination and filtering, report rendering in all
@@ -971,6 +986,14 @@ cancellation during each phase, and cleanup of the verified temporary root.
 
 **Determinism is a test target, not an aspiration.** Every algorithm has a test asserting that
 input order does not change the result and that repeated runs agree.
+
+**The application is verified by running it, not by reasoning about it.**
+`tests/e2e/changeReview.spec.ts` launches the built Electron app and drives a real review,
+and `scripts/screenshots.ts` captures each view the same way. Both seed a project row directly
+into a throwaway user-data database, because opening a project normally goes through a native
+folder dialog that automation cannot drive; the seeded row is the state that dialog would have
+produced. Neither writes to the repository being scanned. Playwright uses the application's own
+Electron binary, so no browser download is involved and the offline rule holds.
 
 `tests/fixtures/sample-project/` deliberately contains: normal imports, a circular dependency,
 used and unused exports, a barrel, an `export *` barrel, a path alias, a dynamic import, a
@@ -1025,8 +1048,8 @@ Report these in the app rather than hiding them.
   stale.
 - **Change review only compares the working tree with `HEAD`.** No arbitrary refs or branches.
 - **Parser failures without a line** stay limitations.
-- **The 360 view ceiling is `GRAPH_NODE_HARD_LIMIT`**, so "every file at once" currently means
-  up to 5000.
+- **The graph shows up to `GRAPH_NODE_SOFT_LIMIT` nodes** by default, and never more than
+  `GRAPH_NODE_HARD_LIMIT`. A larger project is shown in part, and says so.
 
 ---
 
@@ -1036,35 +1059,32 @@ Ordered by value per unit of risk. Nothing here may violate section 2.
 
 ### Near term
 
-1. **Lift the 3D node ceiling.** The 5000 cap exists for canvas hit-testing. WebGL does not
-   share it. Measure the instanced path at 20k and 50k nodes, then introduce a renderer-aware
-   limit rather than raising a constant blind.
-2. **Reverse-direction preview.** Tell the user that removing this export breaks three
+1. **Reverse-direction preview.** Tell the user that removing this export breaks three
    dependents, while they are still typing. This is the single highest-value gap in the editor.
-3. **Symbol-level call edges.** Attribute the caller to its enclosing function so the call slice
+2. **Symbol-level call edges.** Attribute the caller to its enclosing function so the call slice
    becomes a real call graph rather than a file-level view wearing the name.
-4. **New files in preview resolution.** Preview resolves against the last scan's file list, so a
+3. **New files in preview resolution.** Preview resolves against the last scan's file list, so a
    file created since the scan reads as unresolvable. Union the on-disk list.
-5. **Community-aware layout.** Feed detected communities into the 2D layout so clusters are
+4. **Community-aware layout.** Feed detected communities into the 2D layout so clusters are
    spatially separated, not merely coloured.
 
 ### Medium term
 
-6. **Namespace-import usage tracking.** `ns.foo()` already resolves; extend that to reference
+5. **Namespace-import usage tracking.** `ns.foo()` already resolves; extend that to reference
    edges so namespace imports stop being a blanket caveat.
-7. **Cross-community bridge findings.** A file that is the sole connection between two large
+6. **Cross-community bridge findings.** A file that is the sole connection between two large
    communities is architecturally interesting and currently invisible.
-8. **Watch-mode CLI** for CI that reports only what changed against a baseline.
-9. **Per-language symbol extraction** for Python, Go, and Rust via tree-sitter, unlocking
+7. **Watch-mode CLI** for CI that reports only what changed against a baseline.
+8. **Per-language symbol extraction** for Python, Go, and Rust via tree-sitter, unlocking
    unused-export analysis and complexity for those languages.
-10. **Incremental typecheck scoping** — check only the configurations that own changed files.
+9. **Incremental typecheck scoping** — check only the configurations that own changed files.
 
 ### Long term
 
-11. **A stable, versioned export format** so other tools can consume the graph without reading
+10. **A stable, versioned export format** so other tools can consume the graph without reading
     SQLite.
-12. **Rule authoring from the graph** — select two clusters, generate the forbidden-import rule.
-13. **Time travel.** Scan snapshots already exist; show how the graph's shape moved over the
+11. **Rule authoring from the graph** — select two clusters, generate the forbidden-import rule.
+12. **Time travel.** Scan snapshots already exist; show how the graph's shape moved over the
     last fifty commits.
 
 ### Standing quality bar
@@ -1102,6 +1122,6 @@ TraceDeck is an offline Electron and SQLite dependency-graph application — Typ
 API for JS/TS, tree-sitter for other languages and component templates, incremental scanning
 with a watcher and live draft preview, a dedicated change-review workspace that compares the
 working tree with `HEAD`, Monaco rather than a language server, local-only git helpers,
-deterministic community detection and a 3D branching view, a transparent change-impact score that
-always shows its arithmetic, and a standing refusal to guess, phone home, or claim more than
-static analysis can prove.
+a graph built from directory containment with imports drawn over it and colour left to the
+reader, a transparent change-impact score that always shows its arithmetic, and a standing
+refusal to guess, phone home, or claim more than static analysis can prove.

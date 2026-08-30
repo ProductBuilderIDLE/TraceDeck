@@ -1,4 +1,5 @@
 import { closeDatabase, openDatabase, type Db } from './connection';
+import { ChangeReviewRepository } from './repositories/changeReviewRepository';
 import { EdgeRepository } from './repositories/edgeRepository';
 import { FileRepository } from './repositories/fileRepository';
 import { FindingRepository } from './repositories/findingRepository';
@@ -12,6 +13,7 @@ import { SymbolRepository } from './repositories/symbolRepository';
 
 /** One handle carrying the connection and every repository bound to it. */
 export class DataStore {
+  readonly changeReviews: ChangeReviewRepository;
   readonly projects: ProjectRepository;
   readonly scans: ScanRepository;
   readonly files: FileRepository;
@@ -24,6 +26,7 @@ export class DataStore {
   readonly snapshots: SnapshotRepository;
 
   constructor(readonly db: Db) {
+    this.changeReviews = new ChangeReviewRepository(db);
     this.projects = new ProjectRepository(db);
     this.scans = new ScanRepository(db);
     this.files = new FileRepository(db);
@@ -55,6 +58,7 @@ export function createDataStore(filePath: string): DataStore {
 
 export { openDatabase, closeDatabase };
 export type { Db };
+export * from './repositories/changeReviewRepository';
 export * from './repositories/edgeRepository';
 export * from './repositories/fileRepository';
 export * from './repositories/findingRepository';

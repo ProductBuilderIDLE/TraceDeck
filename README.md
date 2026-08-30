@@ -32,6 +32,7 @@ App version: `0.1.0`.
 - [Type checking](#type-checking)
 - [Algorithms](#algorithms)
 - [Change impact](#change-impact)
+- [Change review](#change-review)
 - [Architecture](#architecture)
 - [Security model](#security-model)
 - [Database](#database)
@@ -63,6 +64,7 @@ implemented**. Section **J was skipped** on purpose (cloud, LSP, CVE fetch, remo
 | **G. Graph UX** | Saved views (`localStorage` key `tracedeck.graph-views`). Collapse barrels, edge filters, minimap, PNG **and** SVG export. Focus neighborhood; call-slice clear button. Nodes are labelled boxes nested in directory containers; colour is opt-in. Hovering shows a readout but never highlights — see [Accessibility](#accessibility). |
 | **H. Search / reports** | Explorer kind filters, exported-only, recents, text hits. Findings j/k/Enter. Report sections `changed-since-scan` and `blast-radius`. CODEOWNERS overlay on file detail. |
 | **I. Languages** | TSC for JS/TS with tsbuildinfo cache under `.tracedeck/cache`. SCSS/Sass/Less are **graph sources**. `.styl` stays a non-source asset. JSON imports remain graph leaves. Package-root rewrites: Go `go.mod`, Python `pyproject.toml`/`setup.cfg` + `__init__.py`, Rust `Cargo.toml`. `.tracedeck` is excluded from discovery. |
+|| **J. Change review** | Compare the working tree with `HEAD` in a dedicated workspace. Capture Git status, materialize the committed tree to a verified temporary root, scan both baseline and target, and persist only the latest completed `change_reviews` row. CLI supports `--review`, `--review-format` (text, JSON, Markdown, or HTML), `--review-output`, and `--review-depth`. The GUI always exports a review as Markdown. |
 
 ### Crash fix (dashboard `.length`)
 
@@ -150,6 +152,9 @@ says "many things point at this," nothing more.
 - While you type, **preview analysis** (`analysis:preview`) updates draft findings for the
   open buffer without waiting for a full persist.
 - The dashboard copy explains incremental vs Full so a fast scan is not mistaken for a skip.
+- **Change review** compares the working tree with `HEAD` in a dedicated workspace. It runs an
+  isolated baseline scan of the committed tree, reports structural deltas, possible impact, and
+  limitations, and can be exported from the CLI as text, JSON, Markdown, or HTML.
 
 ### Graph and inspector
 
@@ -371,7 +376,30 @@ npm run scan -- [path] [--full] [--fail-on type,type] [--format text|json|sarif]
 
 Example: `npm run scan -- . --fail-on circular-dependency,architecture-violation --format sarif`
 
-`tsconfig.node.json` must include both `src/main/**/*.ts` and `src/cli/**/*.ts`.
+### Change review CLI
+
+```bash
+npm run scan -- [path] --review [--review-format text|json|markdown|html] [--review-output <path>] [--review-depth <1-25>]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--review` | Compare the working tree with `HEAD` instead of running a normal scan |
+| `--review-format` | `text` (default), `json`, `markdown`, or `html` |
+| `--review-output` | Write the review report to a file. Required for `html` |
+| `--review-depth` | Maximum possible-impact path depth (`1`–`25`, default `5`) |
+
+Review mode cannot be combined with normal scan flags (`--full`, `--fail-on`, `--format`,
+`--baseline`, or `--write-baseline`). A normal scan and a review are separate operations; running a
+review reuses the existing working-tree scan where it can, then materializes and scans `HEAD` as a
+baseline. Make sure `.tracedeck/` is listed in the project's `.gitignore`; if it is untracked,
+the review can see its own `cli.sqlite` as a changed file and become stale.
+
+Example: `npm run scan -- . --review --review-format markdown --review-output review.md`
+
+`tsconfig.node.json` includes `src/main/**/*.ts` and `src/cli/**/*.ts` for Node type-checking, and
+excludes `tests/unit/renderer/**` and `tests/e2e/**` because those tests run against a browser
+environment.
 
 ---
 
@@ -561,6 +589,121 @@ percentile. It is not a calibrated probability.
 
 ---
 
+## Change review
+
+A dedicated, cancellable workspace that compares the current working tree with `HEAD` and shows
+structural evidence of what changed, what may be affected, and where the analysis had to stop.
+It is **not a prediction**: the language is *possible impact*, *candidate tests*, and
+*no known test*, never "this will break" or "this is safe to ship".
+
+### What a review does
+
+1. Captures the Git status of the working tree (`HEAD`, branch, staged/unstaged/untracked files,
+   renames, copies, and deletes).
+2. Refreshes the working-tree scan incrementally.
+3. Materializes the committed `HEAD` tree into a verified temporary directory and scans that
+   baseline in a separate, temporary SQLite database.
+4. Compares the baseline and target structural snapshots.
+5. Persists only the latest completed result to the `change_reviews` table.
+
+The review creates **no commit**, touches **no index**, and runs entirely offline. The temporary
+baseline directory lives under the OS temporary directory and is removed after the review.
+
+Add `.tracedeck/` to the project's `.gitignore`; otherwise the review may treat the CLI database
+as an untracked file and become stale.
+
+### Open the workspace
+
+1. Open a project folder.
+2. Click **Change review** in the sidebar (or choose **Open Change Review** from the dashboard
+   when a review is stale or missing).
+3. Set the **Traversal depth** (`1`–`25`, default `5`) and click **Run review**.
+4. Watch the phase and progress in the header. A review can be cancelled while it runs.
+
+When the review finishes, the workspace tabs become active:
+
+- **Overview** — base `HEAD` commit, depth, completion time, category counts, and limitations.
+- **Files and edges** — changed files and added/removed dependency edges.
+- **Findings** — introduced or resolved findings.
+- **Possible impact** — affected files and candidate tests, with explanations showing the
+  shortest path from a changed file to each destination.
+- **Limitations** — every place the analysis could not see the whole picture.
+
+### Interpreting the workspace
+
+Each row is a piece of evidence, not a verdict.
+
+- **Changed files** show the Git change type (added, modified, deleted, renamed), staged/unstaged
+  state, and the file language TraceDeck used.
+- **Affected files (possible impact)** are files reached by walking the graph from a changed file
+  up to the selected traversal depth. The path is the shortest one the graph can prove.
+- **Candidate tests** are affected files that look like test files (`TEST_FILE_PATTERNS`). They are
+  possible test coverage, not a guarantee.
+- **No known tests** lists changed files for which no test file appears in the impact graph within
+  the chosen depth.
+- **Limitations** explain what the review could not include (excluded files, unsupported
+  extensions, `export *` ambiguity, computed dynamic imports, etc.).
+
+Clicking a row may open a graph overlay (edges, cycles, affected files, candidate tests, reachable
+exports) or the source/finding evidence panel. Graph nodes are highlighted by click, not by hover,
+to avoid flashing the canvas.
+
+### Freshness
+
+A review can be **current**, **stale**, or **incompatible**:
+
+- **Current** — the working tree, `HEAD`, project configuration, and architecture rules have not
+  changed since the review completed.
+- **Stale** — one or more of those changed after the review. Stale reasons include
+  `WORKING_TREE_CHANGED`, `BASE_COMMIT_CHANGED`, `BASE_TREE_CHANGED`, `USER_CONFIGURATION_CHANGED`,
+  `EFFECTIVE_BASELINE_CHANGED`, `CONFIGURATION_UNAVAILABLE`, `NOT_A_GIT_REPO`, or `HEAD_UNBORN`.
+  Stale reviews are still viewable, but the header warns that they no longer describe the current
+  tree.
+- **Incompatible** — the review was created by a version of TraceDeck that the current build cannot
+  read, or the schema is too old/new. Incompatible reviews are listed but cannot be queried or
+  exported.
+
+A stale review is never auto-deleted: the coordinator discards a stale candidate and keeps the
+previous current review, so the workspace never shows a half-finished result.
+
+### Export
+
+The header **Export** button opens a native save dialog and writes the current review as Markdown.
+The CLI can also write text, JSON, Markdown, or HTML; see [CLI](#cli).
+
+### Security and privacy invariants
+
+- **Offline-first / no network.** No AI or cloud service is used. The same files and Git state
+  always produce the same result.
+- **No shell commands.** Git is invoked as a spawned child process with a fixed argument list; no
+  user input reaches a shell.
+- **No arbitrary refs.** The baseline is always the current `HEAD` object id; the review refuses to
+  diff against user-supplied refs.
+- **No absolute paths in output.** Reports and the diff viewer use project-relative paths only.
+- **No source or diff persistence beyond the result.** The raw working tree and baseline diffs are
+  computed on demand and bounded; the retained review stores structural evidence, not full source
+  text or unbounded diffs.
+- **No link traversal.** Symlinks and submodules in `HEAD` are inventory only; they are not followed
+  or materialized.
+- **Bounded diff.** A file diff is capped at `MAX_REVIEW_DIFF_BYTES` (2 MiB) and
+  `MAX_REVIEW_DIFF_LINES` (20,000 lines). Oversized diffs are reported as truncated.
+- **Renderer never holds full results.** The main process paginates evidence (`review:query`);
+  the renderer receives one page at a time.
+
+### Honest limitations
+
+- **Truncation.** Large change sets, deep impact graphs, or large diffs may be truncated. The review
+  reports `truncated` and `truncatedAtDepth` counts honestly.
+- **No known test caveat.** A changed file with no test file in the impact graph does not mean the
+  project has no tests for it; it means no test file is reachable within the chosen traversal depth.
+- **Impact bound by depth.** Affected files and candidate tests are only those reachable within the
+  selected depth. A deeper setting may find more, but it is still a static graph bound.
+- **Working tree vs HEAD.** The review compares the working tree to the current `HEAD`. It does not
+  compare arbitrary commits or branches, and it does not understand uncommitted merge conflict
+  resolution that has not been saved to disk.
+
+---
+
 ## Architecture
 
 ```
@@ -651,8 +794,15 @@ SQLite via `better-sqlite3`, opened only in the main process.
 - **CLI:** `<project>/.tracedeck/cli.sqlite`
 
 Tables include `projects`, `scans`, `files`, `symbols`, `graph_edges`, `analysis_findings`,
-`architecture_rules`, `saved_reports`, `finding_dismissals`, `project_files` (inventory), and
-`scan_snapshots` (fingerprint lists for scan comparison).
+`architecture_rules`, `saved_reports`, `finding_dismissals`, `project_files` (inventory),
+`scan_snapshots` (fingerprint lists for scan comparison), and `change_reviews`.
+
+The `change_reviews` table is added by schema migration `4 (change-reviews)`. It stores exactly one
+row per project, keyed by `project_id` with `ON DELETE CASCADE`. Columns include the `HEAD` commit
+and tree ids, a deterministic working-tree fingerprint, user-configuration and effective-baseline
+fingerprints, the working-tree `scan_id` that was current when the review ran, the TraceDeck
+version, the result schema version, the selected traversal depth, the completion timestamp, the
+summary JSON, and the retained result JSON. A new review replaces the previous row atomically.
 
 - Schema versioning uses `PRAGMA user_version`. Each migration runs inside its own
   transaction; a failure rolls back and aborts the run, leaving the database at the last

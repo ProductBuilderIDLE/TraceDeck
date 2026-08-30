@@ -13,6 +13,7 @@ import {
 } from '../utils/validation';
 import { startWatchingForProject } from './scanHandlers';
 import { forgetPreviewContext } from '../services/previewService';
+import type { ProjectOperationRegistry } from '../services/projectOperations';
 import { stopWatching } from '../services/watchService';
 import { HandledError, type HandlerMap } from './registry';
 
@@ -45,7 +46,7 @@ function parseConfiguration(raw: unknown): ProjectConfiguration {
   };
 }
 
-export function projectHandlers(store: DataStore): HandlerMap {
+export function projectHandlers(store: DataStore, operations: ProjectOperationRegistry): HandlerMap {
   return {
     'project:list': async (payload) => {
       expectVoid(payload);
@@ -90,7 +91,7 @@ export function projectHandlers(store: DataStore): HandlerMap {
       if (!project) throw new HandledError('That project no longer exists.', 'NOT_FOUND');
 
       store.projects.touch(projectId);
-      startWatchingForProject(store, projectId);
+      startWatchingForProject(store, projectId, operations);
       return store.projects.findById(projectId) ?? project;
     },
 

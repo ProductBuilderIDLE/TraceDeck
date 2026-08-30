@@ -75,17 +75,26 @@ describe('scan compare and diff impact', () => {
     expect(result.persisted).toBe(1);
   });
 
-  it('unions blast radii of changed files', () => {
-    const index = new GraphIndex([
+  it('keeps deterministic Dashboard-compatible diff impact output', () => {
+    const edges = [
       edge('file:src/app.ts', 'file:src/core.ts'),
       edge('file:src/core.test.ts', 'file:src/core.ts'),
-    ]);
-    const impact = computeDiffImpact({
+    ];
+    const input = {
       changedPaths: ['src/core.ts'],
-      index,
       entryPoints: ['src/app.ts'],
+    };
+    const impact = computeDiffImpact({ ...input, index: new GraphIndex(edges) });
+    const reversed = computeDiffImpact({ ...input, index: new GraphIndex([...edges].reverse()) });
+
+    expect(impact).toEqual({
+      changedPaths: ['src/core.ts'],
+      affectedPaths: ['src/app.ts', 'src/core.test.ts'],
+      testPaths: ['src/core.test.ts'],
+      entryPoints: ['src/app.ts'],
+      cyclesTouched: [],
+      truncated: false,
     });
-    expect(impact.affectedPaths).toContain('src/app.ts');
-    expect(impact.testPaths).toContain('src/core.test.ts');
+    expect(reversed).toEqual(impact);
   });
 });

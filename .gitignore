@@ -10,6 +10,9 @@ coverage/
 .DS_Store
 .vite/
 tsconfig.*.tsbuildinfo
+test-results/
+playwright-report/
+playwright/.cache/
 
 # Scan cache written into any project TraceDeck analyses, including test fixtures.
 .tracedeck/

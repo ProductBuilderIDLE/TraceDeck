@@ -463,6 +463,8 @@ export interface ArchitectureRule {
   sourcePattern: string;
   targetPattern: string;
   configuration: ArchitectureRuleConfiguration;
+  /** Deterministic fingerprint of the rule's semantic fields, when available. */
+  fingerprint?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -293,6 +293,8 @@ export function FindingsView({
   const dismissFinding = useAppStore((state) => state.dismissFinding);
   const selectNode = useUiStore((state) => state.selectNode);
   const setActiveView = useUiStore((state) => state.setActiveView);
+  const focusedFindingFingerprint = useUiStore((state) => state.focusedFindingFingerprint);
+  const clearReviewContext = useUiStore((state) => state.clearReviewContext);
 
   const [findings, setFindings] = useState<Finding[]>([]);
   const [showDismissed, setShowDismissed] = useState(false);
@@ -328,6 +330,18 @@ export function FindingsView({
   );
 
   const dismissedCount = findings.filter((finding) => finding.dismissedAt).length;
+
+  useEffect(() => {
+    if (!focusedFindingFingerprint) return;
+    if (focusedFindingFingerprint.findingType !== findingType) return;
+    const index = visible.findIndex(
+      (finding) => finding.fingerprint === focusedFindingFingerprint.fingerprint,
+    );
+    if (index !== -1) {
+      setCursor(index);
+    }
+    clearReviewContext();
+  }, [focusedFindingFingerprint, visible, findingType, clearReviewContext]);
 
   useEffect(() => {
     setCursor(0);

@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/appStore';
 import { useUiStore } from '../../store/uiStore';
 import { invoke } from '../../lib/ipc';
 import { Button, Caveat, Card, EmptyState, PathLabel, RiskBadge, StatTile } from '../common/ui';
+import type { ReviewStatus } from '@shared/changeReview';
 
 function PrivacyBanner(): JSX.Element {
   return (
@@ -21,41 +22,60 @@ function PrivacyBanner(): JSX.Element {
   );
 }
 
-function ChangedImpact({ projectId }: { projectId: number }): JSX.Element | null {
-  const [summary, setSummary] = useState<string | null>(null);
+function WorkingTreeStatus({ projectId }: { projectId: number }): JSX.Element | null {
+  const [status, setStatus] = useState<ReviewStatus | null>(null);
+  const [caveat, setCaveat] = useState<string | null>(null);
+  const setActiveView = useUiStore((state) => state.setActiveView);
 
   useEffect(() => {
     let cancelled = false;
-    invoke('git:changed-files', { projectId })
-      .then(async (files) => {
-        if (cancelled || !files || files.length === 0) {
-          if (!cancelled) setSummary(null);
+    setCaveat(null);
+    invoke('review:status', { projectId })
+      .then((result) => {
+        if (!cancelled) setStatus(result);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Status unavailable';
+        if (/not a git repository/i.test(message) || /not.*git/i.test(message)) {
+          // Not a git repo: stay quiet, the Change Review view will explain it.
           return;
         }
-        const impact = await invoke('analysis:diff-impact', {
-          projectId,
-          changedPaths: files.map((file) => file.relativePath),
-        });
-        if (!cancelled) {
-          const affected = impact?.affectedPaths?.length ?? 0;
-          const tests = impact?.testPaths?.length ?? 0;
-          setSummary(
-            `${files.length} file(s) differ from HEAD; ${affected} file(s) could be affected` +
-              (tests > 0 ? `, including ${tests} test file(s)` : '') +
-              '.',
-          );
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setSummary(null);
+        setCaveat(message);
       });
     return () => {
       cancelled = true;
     };
   }, [projectId]);
 
-  if (!summary) return null;
-  return <Card title="Working tree impact">{summary}</Card>;
+  if (caveat) {
+    return (
+      <Card title="Working tree status">
+        <Caveat>{caveat}</Caveat>
+      </Card>
+    );
+  }
+
+  if (status?.repositoryState === 'not-git') return null;
+
+  const changed = status?.gitChanges?.length ?? 0;
+  const stale = status?.latestReview?.freshness !== 'current';
+
+  return (
+    <Card title="Working tree status">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[12px] text-ink-muted">
+          {changed === 0
+            ? 'No files differ from HEAD.'
+            : `${changed} file(s) differ from HEAD.`}
+          {stale && status?.latestReview && ' The latest review is stale.'}
+        </p>
+        <Button size="sm" variant="ghost" onClick={() => setActiveView('change-review')}>
+          Open Change Review
+        </Button>
+      </div>
+    </Card>
+  );
 }
 
 function LimitationsCard({ limitations }: { limitations: readonly string[] | undefined }): JSX.Element | null {
@@ -155,7 +175,7 @@ export function Dashboard(): JSX.Element {
   return (
     <div className="space-y-4 p-5">
       <PrivacyBanner />
-      <ChangedImpact projectId={project.id} />
+      <WorkingTreeStatus projectId={project.id} />
 
       <div>
         <h2 className="text-[15px] font-semibold text-ink">{project.name}</h2>

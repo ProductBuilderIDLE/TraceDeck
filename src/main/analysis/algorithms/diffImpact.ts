@@ -1,8 +1,7 @@
 import type { GraphIndex } from './graphIndex';
-import { traverse } from './blastRadius';
 import { detectCycles } from './cycles';
-import { isTestFile } from '../discovery';
-import { fileNodeId, parseNodeId } from '@shared/nodeIds';
+import { computeTargetReviewImpact } from './reviewImpact';
+import { fileNodeId } from '@shared/nodeIds';
 
 export interface DiffImpactInput {
   changedPaths: readonly string[];
@@ -26,32 +25,18 @@ export interface ComputedDiffImpact {
  */
 export function computeDiffImpact(input: DiffImpactInput): ComputedDiffImpact {
   const maxNodes = input.maxNodes ?? 2000;
-  const changed = [...new Set(input.changedPaths.map((path) => path.replaceAll('\\', '/')))];
-  const affected = new Set<string>();
-  let truncated = false;
-
-  for (const path of changed) {
-    const nodeId = fileNodeId(path);
-    if (!input.index.has(nodeId)) {
-      affected.add(path);
-      continue;
-    }
-    const walk = traverse(input.index, nodeId, { maxDepth: 25, direction: 'dependents' });
-    if (walk.truncated) truncated = true;
-    for (const entry of walk.entries) {
-      const parsed = parseNodeId(entry.nodeId);
-      if (parsed) affected.add(parsed.path);
-      if (affected.size >= maxNodes) {
-        truncated = true;
-        break;
-      }
-    }
-    if (truncated) break;
-  }
+  const traversal = computeTargetReviewImpact({
+    index: input.index,
+    changedPaths: input.changedPaths,
+    maxDepth: 25,
+    maxRetained: maxNodes,
+  });
+  const changed = [...new Set(input.changedPaths.map((path) => path.replaceAll('\\', '/')))].sort();
+  const affected = traversal.affectedPaths;
 
   const entrySet = new Set(input.entryPoints);
-  const entryPoints = [...affected].filter((path) => entrySet.has(path)).sort();
-  const testPaths = [...affected].filter((path) => isTestFile(path)).sort();
+  const entryPoints = affected.filter((path) => entrySet.has(path)).sort();
+  const testPaths = traversal.testPaths;
 
   const cycles = detectCycles(input.index);
   const affectedNodes = new Set([...affected].map((path) => fileNodeId(path)));
@@ -61,11 +46,11 @@ export function computeDiffImpact(input: DiffImpactInput): ComputedDiffImpact {
     .slice(0, 50);
 
   return {
-    changedPaths: changed.sort(),
-    affectedPaths: [...affected].sort(),
+    changedPaths: changed,
+    affectedPaths: affected,
     testPaths,
     entryPoints,
     cyclesTouched,
-    truncated,
+    truncated: traversal.truncated,
   };
 }

@@ -33,6 +33,15 @@ import type {
   SymbolKind,
 } from './types';
 import type { ThemeId } from './theme';
+import type {
+  ChangeReviewSummary,
+  ReviewExportFormat,
+  ReviewFileDiff,
+  ReviewFilters,
+  ReviewPage,
+  ReviewSection,
+  ReviewStatus,
+} from './changeReview';
 
 /**
  * Every handler returns this envelope. Failures are converted to a plain message in the
@@ -128,6 +137,50 @@ export interface UpdateProjectConfigRequest {
   configuration: ProjectConfiguration;
 }
 
+export interface ReviewStatusRequest {
+  projectId: number;
+}
+
+export interface ReviewStartRequest {
+  projectId: number;
+  traversalDepth: number;
+}
+
+export interface ReviewCancelRequest {
+  projectId: number;
+  operationId: string;
+}
+
+export interface ReviewSummaryRequest {
+  projectId: number;
+}
+
+export interface ReviewQueryRequest {
+  projectId: number;
+  reviewId: number;
+  section: ReviewSection;
+  filters: ReviewFilters;
+  cursor?: string;
+  pageLimit?: number;
+}
+
+export interface ReviewFileDiffRequest {
+  projectId: number;
+  reviewId: number;
+  relativePath: string;
+}
+
+export interface ReviewExportRequest {
+  projectId: number;
+  reviewId: number;
+  format: ReviewExportFormat;
+}
+
+export interface ReviewExportResult {
+  cancelled: boolean;
+  fileName: string | null;
+}
+
 /**
  * The single source of truth for the IPC surface. Adding a channel here and implementing
  * the handler is the only supported way to widen what the renderer can reach.
@@ -142,6 +195,14 @@ export interface IpcContract {
   'scan:start': { request: StartScanRequest; response: { scanId: number } };
   'scan:cancel': { request: { projectId: number }; response: { cancelled: boolean } };
   'scan:latest': { request: { projectId: number }; response: Scan | null };
+
+  'review:status': { request: ReviewStatusRequest; response: ReviewStatus };
+  'review:start': { request: ReviewStartRequest; response: { operationId: string } };
+  'review:cancel': { request: ReviewCancelRequest; response: { requested: boolean } };
+  'review:summary': { request: ReviewSummaryRequest; response: ChangeReviewSummary | null };
+  'review:query': { request: ReviewQueryRequest; response: ReviewPage };
+  'review:file-diff': { request: ReviewFileDiffRequest; response: ReviewFileDiff };
+  'review:export': { request: ReviewExportRequest; response: ReviewExportResult };
 
   'dashboard:stats': { request: { projectId: number }; response: DashboardStats };
 
@@ -241,6 +302,13 @@ export const IPC_CHANNELS = [
   'scan:start',
   'scan:cancel',
   'scan:latest',
+  'review:status',
+  'review:start',
+  'review:cancel',
+  'review:summary',
+  'review:query',
+  'review:file-diff',
+  'review:export',
   'dashboard:stats',
   'graph:query',
   'graph:blast-radius',

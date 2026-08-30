@@ -1,52 +1,25 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { ALL_FINDING_TYPES, DEFAULT_PROJECT_CONFIGURATION, type FindingType } from '@shared/types';
+import { join } from 'node:path';
+import { DEFAULT_PROJECT_CONFIGURATION } from '@shared/types';
 import { createDataStore } from '@main/db';
 import { runScan } from '@main/analysis/scanner';
+import { createChangeReviewCoordinator } from '@main/services/changeReview/coordinator';
+import { renderChangeReview } from '@main/services/changeReview/report';
+import { ProjectOperationRegistry } from '@main/services/projectOperations';
+import packageMetadata from '../../package.json';
+import { parseCliOptions, renderCliHelp } from './options';
 
-interface CliOptions {
-  root: string;
-  fullRescan: boolean;
-  failOn: FindingType[];
-  format: 'text' | 'json' | 'sarif';
-  baseline: string | null;
-  writeBaseline: boolean;
+export interface CliIo {
+  cwd: string;
+  stdout(message: string): void;
+  now(): string;
 }
 
-function parseArgs(argv: string[]): CliOptions {
-  const failOn: FindingType[] = [];
-  let root = process.cwd();
-  let fullRescan = false;
-  let format: CliOptions['format'] = 'text';
-  let baseline: string | null = null;
-  let writeBaseline = false;
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index] ?? '';
-    if (arg === '--fail-on') {
-      const value = argv[index + 1] ?? '';
-      index += 1;
-      for (const raw of value.split(',').map((part) => part.trim()).filter(Boolean)) {
-        if ((ALL_FINDING_TYPES as readonly string[]).includes(raw)) failOn.push(raw as FindingType);
-      }
-    } else if (arg === '--format') {
-      const value = argv[index + 1] ?? 'text';
-      index += 1;
-      if (value === 'json' || value === 'sarif' || value === 'text') format = value;
-    } else if (arg === '--full') {
-      fullRescan = true;
-    } else if (arg === '--baseline') {
-      baseline = argv[index + 1] ?? null;
-      index += 1;
-    } else if (arg === '--write-baseline') {
-      writeBaseline = true;
-    } else if (!arg.startsWith('-')) {
-      root = resolve(arg);
-    }
-  }
-
-  return { root, fullRescan, failOn, format, baseline, writeBaseline };
-}
+const PROCESS_IO: CliIo = {
+  cwd: process.cwd(),
+  stdout: (message) => process.stdout.write(message),
+  now: () => new Date().toISOString(),
+};
 
 function toSarif(findings: Array<{ title: string; description: string; findingType: string }>): string {
   return JSON.stringify(
@@ -77,8 +50,13 @@ function readBaseline(path: string): Set<string> {
   }
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+export async function runCli(argv: readonly string[], io: CliIo): Promise<number> {
+  const options = parseCliOptions(argv, io.cwd);
+  if (options.help) {
+    io.stdout(`${renderCliHelp()}\n`);
+    return 0;
+  }
+
   const cacheDir = join(options.root, '.tracedeck');
   mkdirSync(cacheDir, { recursive: true });
   const store = createDataStore(join(cacheDir, 'cli.sqlite'));
@@ -92,6 +70,31 @@ async function main(): Promise<void> {
       ...DEFAULT_PROJECT_CONFIGURATION,
       ...project.configuration,
     });
+
+    if (options.review) {
+      const coordinator = createChangeReviewCoordinator(
+        store,
+        new ProjectOperationRegistry(),
+        packageMetadata.version,
+      );
+      const record = await coordinator.runNow(project.id, options.reviewDepth);
+      if (!record.compatible || !record.result) {
+        throw new Error('The completed change review is incompatible.');
+      }
+      const status = await coordinator.status(project.id);
+      const latest = status.latestReview?.reviewId === record.id ? status.latestReview : null;
+      if (latest?.freshness === 'incompatible') {
+        throw new Error('The completed change review is incompatible.');
+      }
+      const rendered = renderChangeReview(record.result, {
+        freshness: latest?.freshness ?? 'stale',
+        staleReasons: latest?.staleReasons ?? ['REVIEW_NOT_CURRENT'],
+        generatedAt: io.now(),
+      }, options.reviewFormat);
+      if (options.reviewOutput) writeFileSync(options.reviewOutput, rendered, 'utf8');
+      else io.stdout(rendered);
+      return 0;
+    }
 
     const scan = await runScan(store, {
       project: store.projects.findById(project.id) ?? project,
@@ -115,21 +118,30 @@ async function main(): Promise<void> {
       : [];
 
     if (options.format === 'json') {
-      process.stdout.write(`${JSON.stringify({ scan, findings: novel }, null, 2)}\n`);
+      io.stdout(`${JSON.stringify({ scan, findings: novel }, null, 2)}\n`);
     } else if (options.format === 'sarif') {
-      process.stdout.write(`${toSarif(novel)}\n`);
+      io.stdout(`${toSarif(novel)}\n`);
     } else {
-      process.stdout.write(
+      io.stdout(
         `Scan ${scan.status}: ${findings.length} finding(s), ${novel.length} new versus baseline.\n`,
       );
       for (const finding of novel.slice(0, 50)) {
-        process.stdout.write(`- [${finding.findingType}] ${finding.title}\n`);
+        io.stdout(`- [${finding.findingType}] ${finding.title}\n`);
       }
     }
 
-    if (failing.length > 0) process.exitCode = 1;
+    return failing.length > 0 ? 1 : 0;
   } finally {
     store.close();
+  }
+}
+
+async function main(): Promise<void> {
+  try {
+    process.exitCode = await runCli(process.argv.slice(2), PROCESS_IO);
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : 'TraceDeck failed.'}\n`);
+    process.exitCode = 1;
   }
 }
 

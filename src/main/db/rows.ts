@@ -120,6 +120,23 @@ export interface ReportRow {
   created_at: string;
 }
 
+export interface ChangeReviewRow {
+  id: number;
+  project_id: number;
+  base_commit: string;
+  base_tree_id: string | null;
+  working_tree_fingerprint: string;
+  user_configuration_fingerprint: string;
+  effective_baseline_fingerprint: string;
+  working_tree_scan_id: number;
+  tracedeck_version: string;
+  result_schema_version: number;
+  traversal_depth: number;
+  completed_at: string;
+  summary_json: string;
+  retained_result_json: string;
+}
+
 /**
  * Persisted JSON is written by this app, but a truncated write or a hand-edited database
  * should degrade to a default rather than crash the process on open.

@@ -1,16 +1,47 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, type FSWatcher, type WatchEventType } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataStore } from '@main/db';
 import { openDatabase } from '@main/db/connection';
 import { runScan } from '@main/analysis/scanner';
+import { scanHandlers, startWatchingForProject } from '@main/ipc/scanHandlers';
 import { AnalysisService } from '@main/services/analysisService';
+import { ProjectOperationRegistry } from '@main/services/projectOperations';
+import {
+  stopAllWatchers,
+  watchProject,
+  type WatchFactory,
+} from '@main/services/watchService';
 import type { CycleDetails, Project, UnusedExportDetails } from '@shared/types';
+
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [] },
+}));
 
 const FIXTURE_ROOT = resolve(__dirname, '../fixtures/sample-project');
 
 function fixture(name: string): string {
   return resolve(__dirname, `../fixtures/${name}`);
+}
+
+function fakeWatcher(): {
+  watch: WatchFactory;
+  emit(filename: string | null): void;
+  close: ReturnType<typeof vi.fn>;
+} {
+  let listener: ((eventType: WatchEventType, filename: string | null) => void) | null = null;
+  const close = vi.fn();
+  const watcher = { close } as unknown as FSWatcher;
+  const watch: WatchFactory = (_rootPath, _options, nextListener) => {
+    listener = nextListener;
+    return watcher;
+  };
+
+  return {
+    watch,
+    emit: (filename) => listener?.('change', filename),
+    close,
+  };
 }
 
 let store: DataStore;
@@ -22,6 +53,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopAllWatchers();
+  vi.useRealTimers();
   store.close();
 });
 
@@ -467,5 +500,119 @@ describe('scan cancellation', () => {
     ).rejects.toThrow(/cancelled/i);
 
     expect(store.scans.latestForProject(project.id)?.status).toBe('cancelled');
+  });
+});
+
+describe('scan operation coordination', () => {
+  it('publishes a scan lease while running and rejects a second scan', async () => {
+    const operations = new ProjectOperationRegistry();
+    const handlers = scanHandlers(store, operations);
+    const start = handlers['scan:start']!;
+
+    const first = start({ projectId: project.id, fullRescan: false });
+    expect(operations.active(project.id)).toMatchObject({ projectId: project.id, kind: 'scan' });
+
+    await expect(start({ projectId: project.id, fullRescan: false })).rejects.toMatchObject({
+      code: 'SCAN_IN_PROGRESS',
+    });
+    await expect(first).resolves.toEqual({ scanId: expect.any(Number) });
+    expect(operations.active(project.id)).toBeNull();
+  });
+
+  it('rejects a user scan while a review owns the project', async () => {
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const start = scanHandlers(store, operations)['scan:start']!;
+
+    await expect(start({ projectId: project.id, fullRescan: false })).rejects.toMatchObject({
+      code: 'REVIEW_IN_PROGRESS',
+    });
+    expect(operations.active(project.id)?.operationId).toBe(review?.operationId);
+  });
+
+  it('does not let scan cancellation cancel a review lease', async () => {
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const cancel = scanHandlers(store, operations)['scan:cancel']!;
+
+    await expect(cancel({ projectId: project.id })).resolves.toEqual({ cancelled: false });
+    expect(review?.scanSignal.cancelled).toBe(false);
+    expect(review?.abortController.signal.aborted).toBe(false);
+  });
+
+  it('cancels the active scan lease and persists cancelled status', async () => {
+    const operations = new ProjectOperationRegistry();
+    const handlers = scanHandlers(store, operations);
+    const start = handlers['scan:start']!;
+    const cancel = handlers['scan:cancel']!;
+
+    const request = start({ projectId: project.id, fullRescan: false });
+    const active = operations.active(project.id);
+    expect(active?.kind).toBe('scan');
+    await expect(cancel({ projectId: project.id })).resolves.toEqual({ cancelled: true });
+    await expect(request).rejects.toMatchObject({ code: 'SCAN_CANCELLED' });
+
+    expect(store.scans.latestForProject(project.id)?.status).toBe('cancelled');
+    expect(operations.active(project.id)).toBeNull();
+  });
+});
+
+describe('project watcher', () => {
+  it('normalizes the changed path and waits for an 800 ms quiet period', async () => {
+    vi.useFakeTimers();
+    const fake = fakeWatcher();
+    const onChange = vi.fn();
+    watchProject(project.id, project.rootPath, onChange, fake.watch);
+
+    fake.emit('src\\first.ts');
+    await vi.advanceTimersByTimeAsync(400);
+    fake.emit('src\\second.ts');
+    await vi.advanceTimersByTimeAsync(799);
+    expect(onChange).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('src/second.ts');
+  });
+
+  it('suppresses changes inside excluded directories', async () => {
+    vi.useFakeTimers();
+    const fake = fakeWatcher();
+    const onChange = vi.fn();
+    watchProject(project.id, project.rootPath, onChange, fake.watch);
+
+    fake.emit('node_modules\\dependency\\index.ts');
+    fake.emit('.git\\config');
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('marks a review dirty and starts exactly one deferred scan after release', async () => {
+    vi.useFakeTimers();
+    const operations = new ProjectOperationRegistry();
+    const review = operations.acquire(project.id, 'review');
+    const acquire = vi.spyOn(operations, 'acquire');
+    const fake = fakeWatcher();
+    startWatchingForProject(store, project.id, operations, fake.watch);
+
+    fake.emit('src\\first.ts');
+    await vi.advanceTimersByTimeAsync(800);
+    fake.emit('src\\latest.ts');
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(review?.workingTreeDirty).toBe(true);
+    expect(acquire).not.toHaveBeenCalled();
+    review?.release();
+    expect(operations.active(project.id)).toBeNull();
+
+    await Promise.resolve();
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledWith(project.id, 'scan');
+    const active = operations.active(project.id);
+    expect(active).toMatchObject({ kind: 'scan' });
+
+    operations.cancel(project.id, active?.operationId);
+    await vi.waitFor(() => expect(operations.active(project.id)).toBeNull());
   });
 });
